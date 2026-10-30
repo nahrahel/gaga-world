@@ -167,24 +167,35 @@ export const Q = {};
 // ---- float: lift against gravity, buoyant arms, slow drift
 Q.float = {
   attack: 2.2, release: 2.6, shapeGain: 0.95,
-  shapes: { armsMid: 1.6, vUp: 1.0, armsOut: 0.9, brush: 0.6, reachDiag: 0.6, ready: 0.5, sideBend: 0.35, archBack: 0.1 },
-  armPrefs: { floatSide: 1.4, floatLow: 1.2, upOut: 1.0, floatFwd: 0.6, overhead: 0.5, reachDiag: 0.4, curveLow: 0.4, hang: 0.3 },
+  shapes: { armsMid: 1.6, vUp: 1.0, armsOut: 0.9, brush: 0.6, reachDiag: 0.25, ready: 0.5, sideBend: 0.35, archBack: 0.1 }, // float lifts and opens to the sides; forward reaches stay rare
+  armPrefs: { floatSide: 1.5, floatLow: 1.2, upOut: 1.1, floatFwd: 0.25, overhead: 0.5, reachDiag: 0.15, curveLow: 0.3, hang: 0.3 },
   regions: { center: 0.2, pelvis: 0.2, spine: 0.4, arms: 0.7, hands: 0.4, legs: 0.15, feet: 0.1, head: 0.3, flesh: 0.1 },
   tempo: () => 0.12,
-  mod(P, v) { P.mods.drift += 1.2 * v; P.mods.trail += 1.6 * v; P.mods.weightShift += 0.3 * v; P.mods.travel += 0.2 * v; P.mods.holdDrift += 0.5 * v; },
+  mod(P, v) { P.mods.drift += 1.2 * v; P.mods.trail += 1.0 * v; P.mods.armLong += 2 * v; P.mods.weightShift += 0.3 * v; P.mods.travel += 0.2 * v; P.mods.holdDrift += 0.5 * v; },
   gen(P, v) {
     const T = P.T, ts = P.ts, s0 = P.ns + 1000;
     for (let s = 0; s < 2; s++) {
       const o = s0 + s * 31;
-      // each arm wanders on its own slow path, as if held up by water; elbows and palms keep changing
-      const lift = 0.5 + 0.5 * n2(ts * 0.11, o);
-      armAdd(T, s, A.UEL, (v * (6 + 34 * lift) + v * 16 * n2(ts * 0.27, o + 9)) * clamp(1.6 - T[ac(s, A.UEL)] / 110, 0.15, 1));
-      armAdd(T, s, A.UAZ, v * 32 * n2(ts * 0.1, o + 1) + v * 10 * n2(ts * 0.3, o + 10));
-      armAdd(T, s, A.EF, v * (6 + 30 * (0.5 + 0.5 * n2(ts * 0.17, o + 2))) * (1 - clamp((T[ac(s, A.UEL)] - 100) / 45, 0, 1)));
-      armAdd(T, s, A.FTW, v * 40 * n2(ts * 0.11, o + 3));
-      armAdd(T, s, A.UTW, v * 22 * n2(ts * 0.09, o + 4));
-      armAdd(T, s, A.WA, v * 10 * n2(ts * 0.17, o + 5));
-      armAdd(T, s, A.CLA, v * 4 * (0.5 + 0.5 * n2(ts * 0.12, o + 6)));
+      // each arm wanders on its own slow path, as if held up by water: it is lifted, carried sideways and let down again at its
+      // own pace, and no two passes are the same. Forearms, wrists and palms keep turning underneath, a little after the shoulder.
+      const lift = 0.5 + 0.5 * n2(ts * 0.46, o);
+      {
+        // lifts ride on the posture the arm is in, but ease into a ceiling about overhead (a posture that is already higher stays)
+        const t0 = T[ac(s, A.UEL)], g = v * (10 + 62 * lift) + v * 34 * n2(ts * 0.7, o + 9), hi = Math.max(112, t0 + 6);
+        armAdd(T, s, A.UEL, g > 0 ? Math.max(0, (t0 + g <= hi - 40 ? t0 + g : hi - 40 + 40 * Math.tanh((t0 + g - hi + 40) / 40)) - t0) : g);
+      }
+      const up = 1 - 0.7 * smoothstep(80, 130, T[ac(s, A.UEL)]); // a raised arm sweeps and turns less: the joints are near their limits there
+      const uz = 66 * n2(ts * 0.34, o + 1) + 22 * n2(ts * 0.8, o + 10);
+      // forward and across sweeps are short, and none while the other arm is already reaching forward at chest height (two
+      // parallel forward arms are the sleepwalker pose); out and back sweeps are wide
+      const ot = 1 - s, oFwd = smoothstep(20, 40, T[ac(ot, A.UAZ)]) * smoothstep(15, 35, T[ac(ot, A.UEL)]) * (1 - smoothstep(100, 120, T[ac(ot, A.UEL)]));
+      armAdd(T, s, A.UAZ, up * v * (uz > 0 ? 0.45 * uz * (1 - oFwd) : uz));
+      armAdd(T, s, A.EF, v * (12 + 58 * (0.5 + 0.5 * n2(ts * 0.5, o + 2))) * (1 - 0.85 * smoothstep(55, 110, T[ac(s, A.UEL)]))); // a raised arm stays long: no folding the hand onto the head
+      armAdd(T, s, A.FTW, up * v * 120 * n2((ts - 0.1) * 0.5, o + 3));
+      armAdd(T, s, A.UTW, up * v * 70 * n2(ts * 0.4, o + 4));
+      armAdd(T, s, A.WA, v * 26 * n2((ts - 0.2) * 0.5, o + 5));
+      armAdd(T, s, A.WF, v * 34 * n2((ts - 0.2) * 0.5, o + 12));
+      armAdd(T, s, A.CLA, v * 5 * (0.5 + 0.5 * n2(ts * 0.26, o + 6)));
       T[ac(s, A.DROOP)] += v * 0.45 * (0.6 + 0.4 * n2(ts * 0.09, o + 11));
       // fingers open, spread, and ripple in sequence
       for (let f = 0; f < 5; f++) {
@@ -192,16 +203,27 @@ Q.float = {
         T[ac(s, A.SPR + f)] += v * (0.35 + 0.25 * n2(ts * 0.3 + f * 0.4, o + 8));
       }
     }
+    // the chest is lifted and let go in slow swells, as if breathed up from below; the swell and a sideways drift travel up the spine
+    const swell = 0.5 + 0.5 * n2(ts * 0.55, s0 + 90);
     for (let i = 1; i <= 6; i++) {
-      const tt = (ts - i * 0.14) * 0.11;
-      T[T3(i, 1)] += v * 1.6 * n2(tt, s0 + 70);
-      T[T3(i, 0)] += v * (1.0 * n2(tt, s0 + 71) - 0.35);
-      T[T3(i, 2)] += v * 1.5 * n2(tt, s0 + 72);
+      const tt = ts - i * 0.14;
+      T[T3(i, 1)] += v * 9 * n2(tt * 0.62, s0 + 70);
+      T[T3(i, 0)] += v * (2.6 * n2(tt * 0.62, s0 + 71) - 0.8) - v * 7.5 * swell * (i >= 3 ? 1 : 0.3);
+      T[T3(i, 2)] += v * 7 * n2(tt * 0.55, s0 + 72);
     }
-    T[T3(0, 1)] += v * 3 * n2(ts * 0.08, s0 + 73);
-    T[PX] += v * 0.02 * n2(ts * 0.07, s0 + 80);
-    T[PZ] += v * 0.015 * n2(ts * 0.06, s0 + 81);
-    T[PY] += v * (0.004 + 0.012 * n2(ts * 0.1, s0 + 82));
+    T[T3(7, 0)] -= v * 8 * swell; T[T3(9, 0)] -= v * 5 * swell + v * 6 * n2(ts * 0.55, s0 + 74);
+    T[T3(9, 2)] += v * 5 * n2(ts * 0.5, s0 + 75);
+    T[T3(0, 1)] += v * 5 * n2(ts * 0.42, s0 + 73); T[T3(0, 0)] += v * 5 * n2(ts * 0.44, s0 + 76); T[T3(0, 2)] += v * 6 * n2(ts * 0.4, s0 + 77);
+    // the body rises and settles, bobbing a little on soft knees; now and then it lifts onto the balls of the feet
+    T[PX] += v * 0.035 * n2(ts * 0.09, s0 + 80);
+    T[PZ] += v * 0.025 * n2(ts * 0.08, s0 + 81);
+    T[PY] += v * (0.006 + 0.03 * n2(ts * 0.14, s0 + 82) + 0.06 * n2(ts * 0.7, s0 + 98));
+    T[REL] += v * 0.83 * smoothstep(0.05, 0.45, n1(ts * 0.11, s0 + 95));
+    // the weight is passed from one foot to the other every second or two, softly, with the knees giving a little each time
+    const wsh = n2(ts * 0.75, s0 + 96);
+    T[WS] += v * 1.65 * wsh;
+    T[PY] -= v * (0.006 + 0.014 * Math.abs(wsh) / 0.6);
+    for (let s = 0; s < 2; s++) legAdd(T, s, L.KNEE, v * 7 * n2(ts * 0.5 + s * 2.3, s0 + 97 + s));
   },
   glow(P, v, push) { push('spine03', 0, 0.03, 0.06, 0.16, v * 0.5); push('hand_L', 0.03, -0.04, 0, 0.08, v * 0.35); push('hand_R', -0.03, -0.04, 0, 0.08, v * 0.35); },
 };

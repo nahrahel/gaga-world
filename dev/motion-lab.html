@@ -93,6 +93,7 @@ function runScenario(spec) {
     const rec = { NB, NP, N: 0, t: new Float64Array(cap), dtIn: new Float64Array(cap), qL: new Float64Array(cap * NB * 4), qW: new Float64Array(cap * NB * 4),
       p: new Float64Array(cap * NB * 3), pts: new Float64Array(cap * NP * 3), com: new Float64Array(cap * 3), restPts,
       axes: TI.map(i => BONES[i].axes), limits: TI.map(i => BONES[i].limits), nan: 0, events: [], segments: seg || null,
+      knuck: ['hand_L', 'hand_R'].map(n => { const b = BONE_BY_NAME[n], l = b.length + 0.05; return [b.dir[0] * l, b.dir[1] * l, b.dir[2] * l]; }), headPt: [0, 0.085, 0.03], // knuckle point and head point of rig.js (hand bone local, head bone local)
       dbg: eng.debug ? { switches: [], names: [], lat: Array.from({ length: 10 }, () => []) } : null };
     let simT = 0, ei = 0, lastShape = null, lastArms = null, hash = 0;
     for (let f = 0; f < nFrames; f++) {

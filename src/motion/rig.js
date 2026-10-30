@@ -68,6 +68,9 @@ function vsub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
 function vlen(a) { return Math.hypot(a[0], a[1], a[2]); }
 function vnorm(a) { const l = vlen(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
 
+// Soft ceiling: the identity up to m below hi, then eases into hi (C1 continuous).
+function satMax(x, hi, m) { return x <= hi - m ? x : hi - m + m * Math.tanh((x - hi + m) / m); }
+
 // Soft clamp: linear in the central 75% of the range, then eases into the limit (C1 continuous).
 function smoothstep01(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
 export function softClamp(x, lo, hi) {
@@ -368,10 +371,11 @@ export function createRig(THREE) {
     // arms
     for (let s = 0; s < 2; s++) {
       const C = S[s], o = ARM0 + s * ARMN;
-      const elev = Math.min(178, Math.max(0, c[o + A.UEL]));
+      // the limits are eased (no hard clip: a wide drifting arm reaching a limit would turn in one frame)
+      const elev = satMax(-satMax(-satMax(c[o + A.UEL], 178, 15), 0, 8), 400, 1);
       // high arms never cross over the head: the plane is limited as the arm rises
-      const azMax = elev > 95 ? Math.max(35, 150 - (elev - 95) * 1.6) : 150;
-      const azim = Math.min(azMax, Math.max(-75, c[o + A.UAZ]));
+      const azMax = 150 - 105 * smoothstep01((elev - 85) / 50);
+      const azim = satMax(-satMax(-c[o + A.UAZ], 75, 20), azMax, 25);
       const h = Math.min(1, Math.max(0, c[o + A.HANG]));
       // scapulohumeral rhythm: shoulder girdle elevates overhead and protracts when reaching forward
       const rhythmE = (Math.max(0, elev - 30) * 0.09 + Math.max(0, elev - 100) * 0.08) * (1 - h);
@@ -387,12 +391,11 @@ export function createRig(THREE) {
       q3.setFromUnitVectors(C.armDir, uDir);
       let tw = c[o + A.UTW];
       // droop: roll the upper arm so the elbow bend points toward the floor (forearm and hand dangle from a floating arm)
-      const drT = Math.min(1, Math.max(0, c[o + A.DROOP])) * smoothstep01((elev - 25) / 35) * smoothstep01((118 - elev) / 22);
-      // the roll is large (up to about 110 deg), so its weight follows the target through two damped stages: an arm that
-      // passes quickly through the droop range never whips its forearm round
-      const ds = (P.droopS || (P.droopS = [null, null]))[s] || (P.droopS[s] = { x1: drT, v1: 0, x2: drT, v2: 0 });
-      const dr = cd2(ds, drT, 9, P.dt);
-      if (dr > 1e-5) { // no threshold: the roll grows continuously from zero
+      const drT = Math.min(1, Math.max(0, c[o + A.DROOP])) * smoothstep01((elev - 25) / 35) * smoothstep01((125 - elev) / 45);
+      // The roll is large (up to about 110 deg) and its target can move fast (the arm is swinging, and near a half turn the
+      // solution flips side), so the roll itself goes through two damped stages before it is applied.
+      let rollT = 0;
+      if (drT > 1e-5) { // no threshold: the roll grows continuously from zero
         const bd = v1.copy(C.bendRest).applyQuaternion(q3);                       // bend direction after the swing
         const gd = v2.copy(DOWN).applyQuaternion(qinv.copy(P.wq[C.clav]).invert());
         gd.addScaledVector(uDir, -gd.dot(uDir));
@@ -403,9 +406,10 @@ export function createRig(THREE) {
           let d = need - tw; d -= 360 * Math.round(d / 360);
           // near a half turn the solution flips side: fade the droop out there so the roll never pops
           const fade = smoothstep01((150 - Math.abs(d)) / 50);
-          tw += d * dr * fade;
+          rollT = d * drT * fade;
         }
       }
+      tw += cd2((P.droopS || (P.droopS = [null, null]))[s] || (P.droopS[s] = { x1: 0, v1: 0, x2: 0, v2: 0 }), rollT, 12, P.dt);
       v1.copy(uDir).multiplyScalar(-SG[s]);
       q2.setFromAxisAngle(v1, softClamp(tw, -88, 88) * D2R);
       b[C.up].quaternion.copy(q2).multiply(q3);
@@ -430,8 +434,10 @@ export function createRig(THREE) {
       pointOf(P, C.hand, C.armDir.x * hl, C.armDir.y * hl, 0, v4);
       pointOf(P, BI.head, 0, 0.085, 0.03, v5);
       const dh = v4.distanceTo(v5);
-      if (dh < 0.3 && P.thr[s].w < 0.5) {
-        const ef = Math.max(0, c[o + A.EF] - Math.min(80, (0.3 - dh) * 450));
+      if (dh < 0.5 && P.thr[s].w < 0.5) {
+        // eased in (softplus then a ceiling): the opening starts from zero slope instead of a corner at 0.3 m
+        const open = 15 * Math.log(1 + Math.exp(Math.min(30, (0.3 - dh) * 450 / 15)));
+        const ef = Math.max(0, c[o + A.EF] - 80 * Math.tanh(open / 80));
         anat(C.fore, ef, 0, c[o + A.FTW], b[C.fore].quaternion);
         fk(P, C.fore); fk(P, C.hand);
       }
@@ -451,8 +457,8 @@ export function createRig(THREE) {
     // legs; a foot whose heel or toe tip still ends up under the floor is raised and solved again
     for (let s = 0; s < 2; s++) {
       legIK(P, s, st.feet[s].toe);
-      const cr = P.crel[s], low = Math.min(cr[0], cr[2]);
-      if (low < -0.0015) { P.ankle[s].y += -low + 0.0004; legIK(P, s, st.feet[s].toe); }
+      const cr = P.crel[s], low = Math.min(cr[0], cr[1], cr[2]);
+      if (low < -0.0001) { P.ankle[s].y += -low + 0.0003; legIK(P, s, st.feet[s].toe); }
     }
   }
 

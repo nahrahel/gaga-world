@@ -124,6 +124,9 @@ function markdown(o, base) {
   L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const k of rows) { const r = R[k], g = r.ground, b = B && B[k], bg = b?.ground;
     L.push(`| ${k} | ${cell(g.slideMaxMm, bg?.slideMaxMm)} | ${cell(g.penetrationByPointMm.toe, bg?.penetrationByPointMm?.toe)} / ${f(g.penetrationByPointMm.heel)} | ${pc(g.feet.L.heelLift)}/${pc(g.feet.R.heelLift)} | ${cell(g.stepsPerMin, bg?.stepsPerMin)} | ${cell(g.liftsPerMin, bg?.liftsPerMin)} | ${cell(g.toeDragMmPerMin, bg?.toeDragMmPerMin, 0)} | ${cell(g.unbalancedFrac, bg?.unbalancedFrac, 1, true)} | ${cell(g.comMarginP5Mm, bg?.comMarginP5Mm, 0)} | ${g.kneeStance.p5}/${g.kneeStance.p50}/${g.kneeStance.p95} | ${cell(r.limits.neckhead, b?.limits?.neckhead, 1, true)} | ${pc(r.head.counter)}/${pc(r.head.follow)} | ${cell(r.head.p99AngSpeed, b?.head?.p99AngSpeed, 0)} | ${cell(r.rhythm.acfShort, b?.rhythm?.acfShort, 2)} |`); }
+  L.push('', '## Hands near the head', '', 'Share of frames in which either hand\'s knuckle point is within 0.18 m of the head point (rig.js face opener points). Target 3% or less for float, idle, lena, snake, lunas and the stacks.', '', '| scenario | share | left | right | closest m |', '|---|---|---|---|---|');
+  for (const k of rows) { const r = R[k], b = B && B[k]; if (!r.handHead) continue;
+    L.push(`| ${k} | ${cell(r.handHead.share * 100, b?.handHead && b.handHead.share * 100, 1)}% | ${f(r.handHead.L * 100, 1)}% | ${f(r.handHead.R * 100, 1)}% | ${f(r.handHead.minDist, 3)} |`); }
   L.push('', '## Events and posture switches\n\nPeak upper-body acceleration in the 3 s after a layer change or accent (or 0.8 s around an internal posture switch), relative to a typical window with no event or switch. Legs: peak leg acceleration in the 3 s after the event, same baseline.', '');
   for (const k of rows) { const r = R[k]; const ev = r.smooth.events, sw = r.smooth.switches;
     if (!ev.length && !sw) continue;

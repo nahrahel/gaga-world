@@ -23,7 +23,7 @@
 //         focus=hand_L&zoom=0.3 (camera aims at a bone)  selftest=1 (determinism, dt edge cases, NaN, cost)
 import * as THREE from 'three';
 import { createEngine } from '../src/motion/engine.js';
-import { buildSkeleton, BONES, BONE_INDEX } from '../src/skeleton.js';
+import { buildSkeleton, BONES, BONE_INDEX, LANDMARKS } from '../src/skeleton.js';
 import { VOCAB } from '../src/vocab.js';
 
 const P = new URLSearchParams(location.search);
@@ -142,7 +142,10 @@ function step(dt) {
     const d = engine.debug(ids[i]);
     for (let s = 0; s < 2; s++) {
       const ft = d.feet[s], planted = !d.airborne[s] && ft.lift < 0.004 && !(d.stepping);
-      const b = d.ballW[s];
+      // the contact point is the football landmark on the toes bone (the toes stay flat while the foot rolls), as in the motion
+      // lab; the foot-bone point under the ball swings a few mm as the heel peels, which is a roll, not a slide
+      f.object3d.updateMatrixWorld(true); tmpV.set(...LANDMARKS['football' + (s ? '_R' : '_L')].offset); f.byName['toes' + (s ? '_R' : '_L')].localToWorld(tmpV);
+      const b = { x: tmpV.x, y: tmpV.y, z: tmpV.z };
       if (!isFinite(b.x) || !isFinite(b.y)) diag.nan++;
       if (planted) {
         const pp = prevPlant[i][s];

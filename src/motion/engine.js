@@ -112,7 +112,7 @@ export function createEngine(THREE, { vocab } = {}) {
       peelOn: [false, false], stepping: false, stepCool: 0, lean: [0, 0], travel: { x: 0, z: 0, f: 0, tx: 0, tz: 0, tf: 0, timer: 4 + rng() * 6 },
       gaze: { mode: 0, timer: 0.5, x: 0, y: 1.6, z: 4, hand: 0, ya: { x1: 0, v1: 0, x2: 0, v2: 0 }, pi: { x1: 0, v1: 0, x2: 0, v2: 0 }, init: false },
       chain: { b: new Float32Array(30), f1: new Float32Array(30), f2: new Float32Array(30), init: false },
-      com: [0, 0, 0], comOff: [0, 0], balCorr: [0, 0], balX: { x1: 0, v1: 0, x2: 0, v2: 0 }, balZ: { x1: 0, v1: 0, x2: 0, v2: 0 }, unWs: 0, stepWs: 0, stepSideHold: 0, unSideHold: 0, unSide: 0, unW: 0, gate: [1, 1], fn: [0, 0], hn: [0, 0], peelGate: 1, reqPeel: [0, 0], fx: [new Float64Array(8), new Float64Array(8)], fz: [new Float64Array(8), new Float64Array(8)],
+      com: [0, 0, 0], comOff: [0, 0], balCorr: [0, 0], balX: { x1: 0, v1: 0, x2: 0, v2: 0 }, balZ: { x1: 0, v1: 0, x2: 0, v2: 0 }, unWs: 0, stepWs: 0, stepSideHold: 0, unSideHold: 0, unSide: 0, unW: 0, gate: [1, 1], fn: [0, 0], hn: [0, 0], peelGate: 1, peelGateS: 1, reqPeel: [0, 0], fx: [new Float64Array(8), new Float64Array(8)], fz: [new Float64Array(8), new Float64Array(8)],
       shapeAmt: 0.3, shapeBoost: { patFront: 0, halfFold: 0, toesArmUp: 0, armsOut: 0, vUp: 0 },
       userThr: [{ on: false, w: 0, str: 0, x: 0, y: 1.4, z: 0.5, tx: 0, ty: 1.4, tz: 0.5, init: false }, { on: false, w: 0, str: 0, x: 0, y: 1.4, z: 0.5, tx: 0, ty: 1.4, tz: 0.5, init: false }],
       act: { regions: {}, energy: 0, tempo: 0.25, dominant: null }, regionSpeed: {},
@@ -218,7 +218,7 @@ export function createEngine(THREE, { vocab } = {}) {
     M.gesture = 0.36; M.gestureHands = 0.42; M.gestureFeet = 0.3; M.drift = 0.55; M.trail = 0.35; M.weightShift = 1;
     M.peelAllowed = 1; M.liftAllowed = 1; M.stepAllowed = 1; M.gazeHands = 0; M.gazeAway = 0; M.loose = 0;
     M.fleshGain = 0.3; M.fleshStiff = 1; M.fleshDamp = 1; M.zetaAdd = 0; M.stiff = 1; M.slowScale = 1; M.fastScale = 1;
-    M.accentDecay = 1; M.holdMul = 1; M.genGain = 1; M.travel = 0.15; M.holdDrift = 1; M.chain = 1; M.pelvisCouple = 0; M.chainTau = 1; M.rib = 1;
+    M.accentDecay = 1; M.holdMul = 1; M.genGain = 1; M.travel = 0.15; M.holdDrift = 1; M.chain = 1; M.pelvisCouple = 0; M.chainTau = 1; M.rib = 1; M.armLong = 0;
     for (const id of QUALITY_ORDER) {
       const q = Q[id]; if (!q.mod) continue;
       let v = P.lv[id] || 0;
@@ -299,7 +299,7 @@ export function createEngine(THREE, { vocab } = {}) {
     const V = P.V;
     const dvE = clamp(V[ac(0, A.UEL)] - V[ac(1, A.UEL)], -160, 160), dvA = clamp(V[ac(0, A.UAZ)] - V[ac(1, A.UAZ)], -160, 160);
     const vSum = clamp(V[ac(0, A.UEL)] + V[ac(1, A.UEL)], -200, 200);
-    for (let i = 3; i <= 6; i++) { T[T3(i, 1)] -= clamp(0.028 * dvE, -4, 4); T[T3(i, 2)] -= clamp(0.03 * dvA, -4, 4); T[T3(i, 0)] -= clamp(0.012 * vSum, -2.5, 2.5); }
+    for (let i = 3; i <= 6; i++) { T[T3(i, 1)] -= clamp(0.028 * dvE, -4, 4); T[T3(i, 2)] -= clamp(0.024 * dvA, -3.2, 3.2); T[T3(i, 0)] -= clamp(0.012 * vSum, -2.5, 2.5); }
     T[T3(8, 1)] -= clamp(0.02 * dvE, -3.5, 3.5); T[T3(9, 2)] += clamp(0.025 * dvA, -6, 6); // the head follows the ribcage, a beat later (softer neck springs)
     for (let s = 0; s < 2; s++) T[ac(s, A.CLA)] += clamp(0.04 * V[ac(s, A.UEL)], -4, 9);
     // never two parallel arms held forward (the mannequin "zombie" look): separate their heights
@@ -325,7 +325,7 @@ export function createEngine(THREE, { vocab } = {}) {
       // elbow additions from many words saturate softly; raised arms bend less so the hands stay off the face
       if (T[o] > 55) T[o] = 55 + 32 * Math.tanh((T[o] - 55) / 32);
       const cap = e > 110 ? Math.max(14, 55 - (e - 110) * 0.8) : e > 60 ? 85 - (e - 60) * 0.6 : 200;
-      if (T[o] > cap) T[o] = cap + (T[o] - cap) * 0.25;
+      T[o] -= 0.75 * 6 * Math.log(1 + Math.exp(Math.min(30, (T[o] - cap) / 6))); // above the cap the bend gives a quarter as fast, eased in (no corner)
       // high arms: limit the upper-arm roll so a bent elbow never folds the hand behind the head
       if (e > 90) { const tw = ac(s, A.UTW), m = Math.max(12, 50 - (e - 90) * 0.7); T[tw] = m * Math.tanh(T[tw] / m); }
     }
@@ -427,10 +427,10 @@ export function createEngine(THREE, { vocab } = {}) {
     // releve: when both heels are up the whole body rises with them (the ankles rise ~ 0.145 * sin(peel))
     const pl = Math.max(0, T[lc(0, L.PEEL)]) * 28, pr = Math.max(0, T[lc(1, L.PEEL)]) * 28, rel = Math.max(0, T[REL]) * 34;
     P.reqPeel[0] = Math.max((pl + rel) * M.peelAllowed, P.st.feet[0].peel * 1.3); P.reqPeel[1] = Math.max((pr + rel) * M.peelAllowed, P.st.feet[1].peel * 1.3);
-    const rise = 0.145 * Math.sin(Math.min(44, Math.min(pl, pr) + rel) * D2R * M.peelAllowed * P.peelGate);
+    const rise = 0.145 * Math.sin(Math.min(44, Math.min(pl, pr) + rel) * D2R * M.peelAllowed * P.peelGateS);
     T[PY] += rise * 0.9;
     T[PX] += midX + clamp(P.X[WS], -1, 1) * halfW * 0.95;
-    T[PZ] += midZ + 0.012 + 0.012 + 0.09 * clamp(Math.min(pl, pr) + rel, 0, 30) / 30 * P.peelGate * M.peelAllowed; // heels up: the body moves over the balls
+    T[PZ] += midZ + 0.012 + 0.012 + 0.09 * clamp(Math.min(pl, pr) + rel, 0, 30) / 30 * P.peelGateS * M.peelAllowed; // heels up: the body moves over the balls
     balance(P, T);
   }
 
@@ -461,6 +461,10 @@ export function createEngine(THREE, { vocab } = {}) {
       for (let i = 0; i < cnt; i++) { _ux[n] = P.fx[s][i]; _uz[n] = P.fz[s][i]; n++; }
     }
     if (n >= 3) P.peelGate = smoothstep(-0.01, 0.006, hullQuery(buildHull(_ux, _uz, n), cx, cz)); else P.peelGate = 1;
+    // the gate can open within a few frames as the weight arrives; the heels (and the body rising with them) follow it through
+    // two exponential stages, quick to close and slower to open, so the heels never pop up
+    const PG = P.peelGateE || (P.peelGateE = [P.peelGate, P.peelGate]), pa = 1 - Math.exp(-P.dt / (P.peelGate > PG[1] ? 0.09 : 0.04));
+    PG[0] += (P.peelGate - PG[0]) * pa; PG[1] += (PG[0] - PG[1]) * pa; P.peelGateS = PG[1];
     let tx = 0, tz = 0;
     if (n >= 3) {
       const m = buildHull(_ux, _uz, n);
@@ -535,6 +539,10 @@ export function createEngine(THREE, { vocab } = {}) {
     // nod mostly at the head, keep the neck long; a level, lifted carriage by default. The head follows the chest
     // (trunkChain); there is no tilt cancellation, a quality that wants an isolated head adds its own counter-rotation.
     T[T3(7, 0)] += w * (pitS * 0.12 - 3); T[T3(8, 0)] += w * (pitS * 0.16 - 1.5); T[T3(9, 0)] += w * (pitS * 0.72 + 1.5);
+    // The joint turns flex, then side bend, then twist, so a looking-diagonally pose (pitch and yaw together) carries a stray roll
+    // of about half their product. Cancel it: the head turns to look without tilting sideways, and its side bend is then only
+    // what the chest hands up.
+    for (let i = 7; i <= 9; i++) T[T3(i, 1)] += 0.5 * D2R * T[T3(i, 0)] * T[T3(i, 2)];
   }
 
   // The pelvis-to-head chain as followers: each segment's moving part is mostly the delayed (two critically damped
@@ -573,6 +581,22 @@ export function createEngine(THREE, { vocab } = {}) {
       T[ac(s, A.UEL)] += clamp(-35 * V[PY], -15, 15);
       for (let f = 1; f < 5; f++) T[ac(s, A.CURL + f)] += clamp(-0.0008 * M.trail * Math.abs(vel) * f, -0.25, 0);
     }
+    // Long, soft arms (float): above shoulder height the elbow stays between about 14 and 46 degrees, the wrists bend softly
+    // (no sharp break), and an arm does not swing behind the body's side plane while the other arm is also high.
+    const AL = Math.min(1, M.armLong);
+    if (AL > 0.01) {
+      for (let s = 0; s < 2; s++) {
+        const hiW = AL * smoothstep(60, 95, T[ac(s, A.UEL)]), hiO = AL * smoothstep(55, 80, T[ac(1 - s, A.UEL)]);
+        let ef = T[ac(s, A.EF)];
+        ef += hiW * ((ef <= 30 ? ef : 30 + 16 * Math.tanh((ef - 30) / 16)) - ef);
+        ef += hiW * (14 + 8 * Math.log(1 + Math.exp(Math.min(30, (ef - 14) / 8))) - ef);
+        T[ac(s, A.EF)] = ef;
+        T[ac(s, A.WF)] += AL * (34 * Math.tanh(T[ac(s, A.WF)] / 34) - T[ac(s, A.WF)]);
+        T[ac(s, A.WA)] += AL * (22 * Math.tanh(T[ac(s, A.WA)] / 22) - T[ac(s, A.WA)]);
+        const az = T[ac(s, A.UAZ)], x = -az, fl = -(x <= -12 ? x : -12 + 20 * Math.tanh((x + 12) / 20)); // soft floor near -8 deg
+        T[ac(s, A.UAZ)] += hiO * (fl - az);
+      }
+    }
   }
 
   function springs(P) {
@@ -596,7 +620,7 @@ export function createEngine(THREE, { vocab } = {}) {
     const C = P.C, M = P.mods, F = P.feet;
     for (let s = 0; s < 2; s++) {
       const f = F[s], o = P.st.feet[s], S = f.step, gate = P.gate[s];
-      let peel = (Math.max(0, C[lc(s, L.PEEL)]) * 28 + Math.max(0, C[REL]) * 34) * M.peelAllowed * P.peelGate;
+      let peel = (Math.max(0, C[lc(s, L.PEEL)]) * 28 + Math.max(0, C[REL]) * 34) * M.peelAllowed * P.peelGateS;
       // a foot only leaves the floor once the weight is over the other foot (gate), and its forward reach only
       // starts once it is clear of the floor (no slide on the floor)
       let lift = Math.max(0, C[lc(s, L.LIFT)]) * M.liftAllowed * gate;
@@ -640,7 +664,7 @@ export function createEngine(THREE, { vocab } = {}) {
       o.inv = clamp(C[lc(s, L.INV)], -5, 25);
       o.knee = clamp(C[lc(s, L.KNEE)], -30, 45);
       // toes stay flat on the floor while the foot rolls, relax as the foot leaves it (the rig keeps the tip above the floor)
-      const air = smoothstep(0.004, 0.03, lift);
+      const air = smoothstep(0.004, 0.06, lift);
       o.toe = o.peel * (1 - air) + C[lc(s, L.TOE)] * (1 - 0.6 * air);
     }
   }
@@ -690,7 +714,7 @@ export function createEngine(THREE, { vocab } = {}) {
     let fwd = 0;
     for (let s = 0; s < 2; s++) {
       _vm.copy(P.wp[HANDS[s]]).sub(chP).applyQuaternion(chQ);
-      if (_vm.z > 0.2 && _vm.y > -0.22 && _vm.y < 0.32) fwd++;
+      if (_vm.z > 0.2 && Math.abs(_vm.x) < 0.4 && _vm.y > -0.22 && _vm.y < 0.32) fwd++; // forward and in front of the body (arms spread wide are not the sleepwalker pose)
     }
     if (fwd === 2 && P.thr[0].w < 0.3 && P.thr[1].w < 0.3) P.zombieT += P.dt; else P.zombieT = Math.max(0, P.zombieT - 2 * P.dt);
     if (P.zombieT > 0.8) { const s = P.arms[0].t > P.arms[1].t ? 0 : 1; P.arms[s].forceLow = true; P.zombieT = 0; P.zombieHits = (P.zombieHits || 0) + 1; }

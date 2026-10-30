@@ -449,12 +449,34 @@ function edge(rec, D, sm) {
     bigDtSpike: r1(maxIn(seg.big - 0.05, seg.big + 0.3) / steady, 2) };
 }
 
+// Share of frames in which either hand's knuckle point is within 0.18 m of the head point (the two points the rig's face
+// opener uses). A hand cupping the crown or sitting on the face counts; a raised hand beside the head does not.
+function handHead(rec, D) {
+  const NB = rec.NB, bh = BI.head, R = [BI.hand_L, BI.hand_R], TH = 0.18;
+  const rot = (o, v) => { const x = rec.qW[o], y = rec.qW[o + 1], z = rec.qW[o + 2], w = rec.qW[o + 3];
+    const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+    return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)]; };
+  let n = 0; const per = [0, 0]; let minD = 9;
+  for (const k of D.idx) {
+    const ho = (k * NB + bh) * 4, hp = (k * NB + bh) * 3, r = rot(ho, rec.headPt);
+    const hx = rec.p[hp] + r[0], hy = rec.p[hp + 1] + r[1], hz = rec.p[hp + 2] + r[2];
+    let any = false;
+    for (let s = 0; s < 2; s++) {
+      const b = R[s], q = rot((k * NB + b) * 4, rec.knuck[s]), p = (k * NB + b) * 3;
+      const d = Math.hypot(rec.p[p] + q[0] - hx, rec.p[p + 1] + q[1] - hy, rec.p[p + 2] + q[2] - hz);
+      if (d < minD) minD = d; if (d < TH) { per[s]++; any = true; }
+    }
+    if (any) n++;
+  }
+  return { share: r1(n / D.idx.length, 3), L: r1(per[0] / D.idx.length, 3), R: r1(per[1] / D.idx.length, 3), minDist: r1(minD, 3) };
+}
+
 export function computeMetrics(rec, spec) {
   const D = derive(rec);
   const sm = smoothness(rec, D, rec.events);
   const out = { name: spec.name, seconds: r1(D.ts[D.S - 1] - D.ts[0], 2), samples: D.S, nan: rec.nan, hash: rec.hash };
   out.smooth = sm; out.connect = connectedness(rec, D); out.ground = grounding(rec, D); out.head = head(rec, D, sm);
-  out.rhythm = rhythm(rec, D); out.limits = limitsSat(rec, D);
+  out.rhythm = rhythm(rec, D); out.limits = limitsSat(rec, D); if (rec.knuck) out.handHead = handHead(rec, D);
   if (rec.dtIn && spec.dtSeq) out.edge = edge(rec, D, sm);
   if (rec.dbg && rec.dbg.names) out.schedule = rec.dbg.names; // engine debug only: body shape | arm postures every 0.5 s
   // plot payloads (stripped before JSON export by the runner)
