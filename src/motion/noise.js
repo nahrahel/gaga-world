@@ -61,3 +61,14 @@ export function burst(u, rise, decay) {
 
 // Soft bump in [0,1] for |x| < 1 (raised cosine). Used for traveling pulses (balls).
 export function bump(x) { return x <= -1 || x >= 1 ? 0 : 0.5 + 0.5 * Math.cos(x * Math.PI); }
+
+// Two critically damped stages in series on one scalar (state S = { x1, v1, x2, v2 }, exact for any dt, dt = 0 is a
+// no-op). A jump in the target gives a C2 response: position, velocity and acceleration stay continuous.
+// w = natural frequency in rad/s of each stage. Returns the second stage.
+export function cd2(S, tgt, w, dt) {
+  if (!(dt > 0)) return S.x2;
+  const e = Math.exp(-w * dt);
+  let d = S.x1 - tgt, c = S.v1 + w * d, t = c * dt; S.x1 = tgt + (d + t) * e; S.v1 = (S.v1 - w * t) * e;
+  d = S.x2 - S.x1; c = S.v2 + w * d; t = c * dt; S.x2 = S.x1 + (d + t) * e; S.v2 = (S.v2 - w * t) * e;
+  return S.x2;
+}

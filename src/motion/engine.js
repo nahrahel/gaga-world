@@ -4,11 +4,11 @@
 // threads -> posture modifiers -> stance and balance -> gaze -> follow-through -> joint springs -> accents ->
 // rig (soft joint limits, arm aim, collisions, leg IK onto planted feet).
 // Deterministic for a given seed and dt sequence; no allocations in the per-frame path.
-import { makeRng, n1, n2, n3, clamp, smoothstep, smoother } from './noise.js';
+import { makeRng, n1, n2, n3, clamp, smoothstep, smoother, cd2 } from './noise.js';
 import { createRig, BASE, NCH, TR, PX, PY, PZ, A, L, ac, lc, STW, FYAW, REL, WS, GW, SG, GROUPS, CH_GROUP, NTR, ARM0, ARMN, LEG0, LEGN } from './rig.js';
 import { createShapeState, updateShapes, spreadSpine, createArmState, updateArms } from './shapes.js';
 import { Q, QUALITY_ORDER, baseLayer } from './qualities.js';
-import { BONE_INDEX, BONE_BY_NAME } from '../skeleton.js';
+import { BONE_INDEX, BONE_BY_NAME, BONES } from '../skeleton.js';
 
 const TAU = Math.PI * 2, D2R = Math.PI / 180, R2D = 180 / Math.PI;
 const T3 = (i, k) => TR + 3 * i + k;
@@ -37,8 +37,52 @@ const G_LOOSE = Float32Array.from(GROUP_LIST.map(g => ({ pel: 0.3, ppos: 0.2, sp
 // how much stiffness modifiers (thick, grab) apply per group
 const G_STIFF = Float32Array.from(GROUP_LIST.map(g => ({ stance: 0, ws: 0.5, gaze: 0 }[g] ?? 1)));
 
+// ---- support polygon helpers (convex hull of floor contacts in the x,z plane; no allocation)
+const _ux = new Float64Array(24), _uz = new Float64Array(24), _ord = new Int32Array(24), _hi = new Int32Array(48);
+const _hxs = new Float64Array(24), _hzs = new Float64Array(24);
+let _qx = 0, _qz = 0, _hcx = 0, _hcz = 0;
+function cross3(xs, zs, o, a, b) { return (xs[a] - xs[o]) * (zs[b] - zs[o]) - (zs[a] - zs[o]) * (xs[b] - xs[o]); }
+// returns the hull size m; hull points are left in _hxs/_hzs (counter-clockwise in x,z) and their mean in _hcx/_hcz
+function buildHull(xs, zs, n) {
+  for (let i = 0; i < n; i++) _ord[i] = i;
+  for (let i = 1; i < n; i++) {
+    const k = _ord[i]; let j = i - 1;
+    while (j >= 0 && (xs[_ord[j]] > xs[k] || (xs[_ord[j]] === xs[k] && zs[_ord[j]] > zs[k]))) { _ord[j + 1] = _ord[j]; j--; }
+    _ord[j + 1] = k;
+  }
+  let m = 0;
+  for (let i = 0; i < n; i++) { while (m >= 2 && cross3(xs, zs, _hi[m - 2], _hi[m - 1], _ord[i]) <= 0) m--; _hi[m++] = _ord[i]; }
+  for (let i = n - 2, t = m + 1; i >= 0; i--) { while (m >= t && cross3(xs, zs, _hi[m - 2], _hi[m - 1], _ord[i]) <= 0) m--; _hi[m++] = _ord[i]; }
+  if (n > 1) m--;
+  let sx = 0, sz = 0;
+  for (let i = 0; i < m; i++) { _hxs[i] = xs[_hi[i]]; _hzs[i] = zs[_hi[i]]; sx += _hxs[i]; sz += _hzs[i]; }
+  _hcx = m ? sx / m : 0; _hcz = m ? sz / m : 0;
+  return m;
+}
+// signed distance from (x,z) to the hull (positive inside); nearest boundary point in _qx,_qz
+function hullQuery(m, x, z) {
+  if (m < 1) return -1;
+  if (m === 1) { _qx = _hxs[0]; _qz = _hzs[0]; return -Math.hypot(x - _qx, z - _qz); }
+  let best = 1e9, inside = m >= 3;
+  for (let i = 0; i < m; i++) {
+    const j = i + 1 === m ? 0 : i + 1, ax = _hxs[i], az = _hzs[i], ex = _hxs[j] - ax, ez = _hzs[j] - az, L2 = ex * ex + ez * ez;
+    const t = L2 > 1e-12 ? clamp(((x - ax) * ex + (z - az) * ez) / L2, 0, 1) : 0;
+    const px = ax + ex * t, pz = az + ez * t, dd = Math.hypot(x - px, z - pz);
+    if (dd < best) { best = dd; _qx = px; _qz = pz; }
+    if ((x - ax) * (-ez) + (z - az) * ex < 0) inside = false;
+  }
+  return inside ? best : -best;
+}
+// per-bone mass points for the whole-body centre of mass (Winter fractions, same as the motion lab)
+const SEGM = [['head', 0.069, 0.5], ['neck01', 0.006, 0.5], ['neck02', 0.006, 0.5], ['pelvis', 0.142, 0.4],
+  ['spine01', 0.0463, 0.5], ['spine02', 0.0463, 0.5], ['spine03', 0.0464, 0.5], ['spine04', 0.072, 0.5], ['spine05', 0.072, 0.5], ['spine06', 0.072, 0.5],
+  ...['_L', '_R'].flatMap(s => [['upperarm' + s, 0.028, 0.436], ['forearm' + s, 0.016, 0.43], ['hand' + s, 0.006, 0.8], ['thigh' + s, 0.1, 0.433], ['shin' + s, 0.0465, 0.433], ['foot' + s, 0.0145, 0.45]])]
+  .map(([n, m, f]) => { const b = BONES[BONE_INDEX[n]]; return { i: BONE_INDEX[n], m, v: [(b.tail[0] - b.head[0]) * f, (b.tail[1] - b.head[1]) * f, (b.tail[2] - b.head[2]) * f] }; });
+const CHAIN_BETA = [0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.6, 0.6, 0.66];
+
 export function createEngine(THREE, { vocab } = {}) {
   const rig = createRig(THREE);
+  const REST_PEL = rig.REST_LOCAL[BONE_INDEX.pelvis];
   const VOC = new Map((vocab || []).map(v => [v.id, v]));
   const layers = new Map(); // id -> { id, target, value, from, t, dur, addedAt }
   const performers = new Map();
@@ -61,12 +105,14 @@ export function createEngine(THREE, { vocab } = {}) {
       ts: rng() * 100, tf: rng() * 100, dt: 0, dts: 0, dtf: 0, breathPh: rng() * TAU, breath: 0,
       lay: new Map(), lv: {},
       q: {}, mods: {}, floatBoost: 0,
-      wsh: { timer: rng() * 1.5, target: rng() < 0.5 ? 0.4 : -0.4 },
+      wsh: (() => { const w0 = rng() < 0.5 ? 0.4 : -0.4; return { timer: rng() * 1.5, target: w0, x1: w0, v1: 0, x2: w0, v2: 0 }; })(),
       footEv: { t: -1, wait: 1.5 + rng() * 3, side: 0, dur: 0.6, h: 0.04 },
-      feet: [0, 1].map(s => ({ bx: SG[s] * BASE[STW], bz: rig.S[s].ballRest.z, yaw: SG[s] * BASE[FYAW], step: { on: false, t: 0, dur: 0.5, x0: 0, z0: 0, y0: 0, x1: 0, z1: 0, y1: 0, h: 0.06 } })),
+      feet: [0, 1].map(s => ({ bx: SG[s] * BASE[STW], bz: rig.S[s].ballRest.z, yaw: SG[s] * BASE[FYAW], px: 0, step: { on: false, t: 0, wait: 0, dur: 0.5, x0: 0, z0: 0, y0: 0, x1: 0, z1: 0, y1: 0, h: 0.06 } })),
       st: { feet: [0, 1].map(() => ({ bx: 0, bz: 0, yaw: 0, peel: 0, inv: 0, lift: 0, liftFwd: 0, point: 0, knee: 0, toe: 0 })) },
       stepping: false, stepCool: 0, lean: [0, 0], travel: { x: 0, z: 0, f: 0, tx: 0, tz: 0, tf: 0, timer: 4 + rng() * 6 },
-      gaze: { mode: 0, timer: 0.5, x: 0, y: 1.6, z: 4, hand: 0 },
+      gaze: { mode: 0, timer: 0.5, x: 0, y: 1.6, z: 4, hand: 0, ya: { x1: 0, v1: 0, x2: 0, v2: 0 }, pi: { x1: 0, v1: 0, x2: 0, v2: 0 }, init: false },
+      chain: { b: new Float32Array(30), f1: new Float32Array(30), f2: new Float32Array(30), init: false },
+      com: [0, 0, 0], comOff: [0, 0], balCorr: [0, 0], balX: { x1: 0, v1: 0, x2: 0, v2: 0 }, balZ: { x1: 0, v1: 0, x2: 0, v2: 0 }, unWs: 0, stepWs: 0, stepSideHold: 0, unSideHold: 0, unSide: 0, unW: 0, gate: [1, 1], fn: [0, 0], hn: [0, 0], peelGate: 1, reqPeel: [0, 0], fx: [new Float64Array(8), new Float64Array(8)], fz: [new Float64Array(8), new Float64Array(8)],
       shapeAmt: 0.3, shapeBoost: { patFront: 0, halfFold: 0, toesArmUp: 0, armsOut: 0, vUp: 0 },
       userThr: [{ on: false, w: 0, str: 0, x: 0, y: 1.4, z: 0.5, tx: 0, ty: 1.4, tz: 0.5, init: false }, { on: false, w: 0, str: 0, x: 0, y: 1.4, z: 0.5, tx: 0, ty: 1.4, tz: 0.5, init: false }],
       act: { regions: {}, energy: 0, tempo: 0.25, dominant: null }, regionSpeed: {},
@@ -172,7 +218,7 @@ export function createEngine(THREE, { vocab } = {}) {
     M.gesture = 0.36; M.gestureHands = 0.42; M.gestureFeet = 0.3; M.drift = 0.55; M.trail = 0.35; M.weightShift = 1;
     M.peelAllowed = 1; M.liftAllowed = 1; M.stepAllowed = 1; M.gazeHands = 0; M.gazeAway = 0; M.loose = 0;
     M.fleshGain = 0.3; M.fleshStiff = 1; M.fleshDamp = 1; M.zetaAdd = 0; M.stiff = 1; M.slowScale = 1; M.fastScale = 1;
-    M.accentDecay = 1; M.holdMul = 1; M.genGain = 1; M.travel = 0.15; M.holdDrift = 1;
+    M.accentDecay = 1; M.holdMul = 1; M.genGain = 1; M.travel = 0.15; M.holdDrift = 1; M.chain = 1; M.pelvisCouple = 0; M.chainTau = 1;
     for (const id of QUALITY_ORDER) {
       const q = Q[id]; if (!q.mod) continue;
       let v = P.lv[id] || 0;
@@ -232,11 +278,11 @@ export function createEngine(THREE, { vocab } = {}) {
   // whole-body coordination: contrapposto from the weight side, the trunk answering the arms
   function coordinate(P) {
     const T = P.T;
-    const ws = clamp(T[WS], -1, 1);
+    const ws = clamp(P.X[WS], -1, 1); // the sprung weight side: the hips answer the weight as it actually moves
     T[T3(0, 1)] -= ws * 5.5;          // the free hip drops
     T[T3(0, 2)] += ws * 4;            // and swings a little forward
     spreadSpine(T, 0, 0, ws * 8.5, -ws * 2.5);
-    T[T3(8, 1)] -= ws * 2.5; T[T3(9, 1)] -= ws * 1.5;
+    // the head follows the chest (no counter tilt here): isolation is something a quality asks for
     const eL = T[ac(0, A.UEL)], eR = T[ac(1, A.UEL)];
     const fL = Math.sin(clamp(T[ac(0, A.UAZ)], -90, 180) * D2R) * Math.sin(Math.min(eL, 90) * D2R);
     const fR = Math.sin(clamp(T[ac(1, A.UAZ)], -90, 180) * D2R) * Math.sin(Math.min(eR, 90) * D2R);
@@ -263,12 +309,14 @@ export function createEngine(THREE, { vocab } = {}) {
         * clamp((Math.min(aL, aR) - 25) / 25, 0, 1) * clamp((Math.min(eL, eR) - 40) / 20, 0, 1) * clamp((125 - Math.max(eL, eR)) / 20, 0, 1);
       if (d > 0) { const lo = P.asym > 0 ? 1 : 0; T[ac(lo, A.UEL)] -= 38 * d; T[ac(lo, A.EF)] += 15 * d; T[ac(1 - lo, A.UEL)] += 12 * d; T[ac(lo, A.UAZ)] -= 15 * d; }
     }
-    // hanging arms with bent elbows: forearms come forward, never folded into the hip
+    // hanging arms: the elbow is nearly straight (5 to 15 deg) so the hand hangs beside the thigh; the pelvis exclusion
+    // zone in the rig moves a hand sideways, never forward into the groin
     for (let s = 0; s < 2; s++) {
       const e = T[ac(s, A.UEL)]; if (e >= 45) continue;
       const k = 1 - Math.max(0, e) / 45;
       if (T[ac(s, A.UTW)] < -8) T[ac(s, A.UTW)] = -8 + (T[ac(s, A.UTW)] + 8) * (1 - k);
-      T[ac(s, A.UAZ)] += k * Math.max(0, T[ac(s, A.EF)] - 35) * 0.4;
+      const ef = T[ac(s, A.EF)];
+      if (ef > 14) T[ac(s, A.EF)] = ef - (ef - 14) * 0.75 * k;
     }
     for (let s = 0; s < 2; s++) { const o = ac(s, A.UEL); if (T[o] > 140) T[o] = 140 + 25 * Math.tanh((T[o] - 140) / 25); }
     // overhead arms keep the hands off the head: cap the elbow bend as the arm rises past 110
@@ -285,9 +333,9 @@ export function createEngine(THREE, { vocab } = {}) {
     const ts = P.ts, s0 = P.ns + 300;
     for (let s = 0; s < 2; s++) {
       const e = T[ac(s, A.UEL)], up = clamp(e / 90, 0, 1.3), k = (0.45 + 0.55 * up) * P.mods.holdDrift, o = s0 + s * 17;
-      T[ac(s, A.UEL)] += k * 14 * n2(ts * 0.16, o);
-      T[ac(s, A.UAZ)] += k * 18 * n2(ts * 0.13, o + 1);
-      T[ac(s, A.EF)] += k * (4 + 14 * n2(ts * 0.21, o + 2)) * (0.4 + 0.6 * up);
+      T[ac(s, A.UEL)] += k * 24 * n2(ts * 0.19, o);
+      T[ac(s, A.UAZ)] += k * 28 * n2(ts * 0.15, o + 1);
+      T[ac(s, A.EF)] += k * (8 + 22 * n2(ts * 0.23, o + 2)) * (0.4 + 0.6 * up);
       T[ac(s, A.UTW)] += k * 16 * n2(ts * 0.12, o + 3);
       T[ac(s, A.FTW)] += k * 24 * n2(ts * 0.15, o + 4);
       T[ac(s, A.WF)] += k * 10 * n2(ts * 0.27, o + 5);
@@ -327,7 +375,7 @@ export function createEngine(THREE, { vocab } = {}) {
       P.stepPending = err > 0.03;
       if (best >= 0 && err > 0.04 && other.lift < 0.005) {
         const f = F[best], S = f.step;
-        S.on = true; S.t = 0; S.dur = (0.42 + P.rng() * 0.12) / Math.sqrt(Math.max(0.35, M.slowScale));
+        S.on = true; S.t = 0; S.wait = 0; S.dur = (0.42 + P.rng() * 0.12) / Math.sqrt(Math.max(0.35, M.slowScale));
         S.x0 = f.bx; S.z0 = f.bz; S.y0 = f.yaw;
         // clamp: never cross the other foot, keep a sane stance
         const ox = F[1 - best].bx, oz = F[1 - best].bz;
@@ -341,11 +389,32 @@ export function createEngine(THREE, { vocab } = {}) {
         P.stepping = true; P.stepSide = best;
       }
     }
+    // a foot that is asked to lift sends the weight to the other foot first
+    {
+      // the request lasts while the foot is asked to lift or is still off the floor; it rises in about 0.1 s and
+      // lets go over 0.3 s, so the weight returns smoothly after the foot has landed
+      let wsReq = 0, wsT = 0, side = -1;
+      for (let s = 0; s < 2; s++) {
+        const r = smoothstep(0.002, 0.03, Math.max(Math.max(0, T[lc(s, L.LIFT)]) * M.liftAllowed, P.st.feet[s].lift));
+        if (r > wsReq) { wsReq = r; wsT = SG[1 - s]; side = s; }
+      }
+      if (side >= 0) P.unSideHold = side;
+      const tau = wsReq > P.unWs ? 0.18 : 0.4;
+      P.unWs += (wsReq - P.unWs) * (1 - Math.exp(-P.dt / tau));
+      if (P.unWs > 0.002) T[WS] += (SG[1 - P.unSideHold] * 0.95 - T[WS]) * P.unWs;
+      P.unSide = P.unSideHold; P.unW = P.unWs;
+    }
     // weight transfer for a step in progress
-    if (P.stepping) {
-      const s = P.stepSide, S = F[s].step, u = S.t / S.dur;
-      const k = smoothstep(0, 0.22, u) * (1 - smoothstep(0.82, 1, u));
-      T[WS] += (SG[1 - s] * 0.95 - T[WS]) * k;
+    {
+      // the weight moves over about 0.4 s before the foot leaves, and returns over about 0.5 s after it lands
+      let kt = 0;
+      if (P.stepping) { const S = F[P.stepSide].step; kt = S.t / S.dur < 0.9 ? 1 : 0; P.stepSideHold = P.stepSide; }
+      P.stepWs += (kt - P.stepWs) * (1 - Math.exp(-P.dt / (kt > P.stepWs ? 0.16 : 0.35)));
+      if (P.stepWs > 0.002) {
+        const s = P.stepSideHold;
+        T[WS] += (SG[1 - s] * 0.95 - T[WS]) * P.stepWs;
+        if (P.stepWs > P.unW) { P.unW = P.stepWs; P.unSide = s; }
+      }
     }
     // support center from current plants
     let ax0 = 0, az0 = 0, ax1 = 0, az1 = 0;
@@ -357,17 +426,64 @@ export function createEngine(THREE, { vocab } = {}) {
     const midX = (ax0 + ax1) / 2, midZ = (az0 + az1) / 2, halfW = Math.abs(ax0 - ax1) / 2;
     // releve: when both heels are up the whole body rises with them (the ankles rise ~ 0.145 * sin(peel))
     const pl = Math.max(0, T[lc(0, L.PEEL)]) * 28, pr = Math.max(0, T[lc(1, L.PEEL)]) * 28, rel = Math.max(0, T[REL]) * 34;
-    const rise = 0.145 * Math.sin(Math.min(44, Math.min(pl, pr) + rel) * D2R * M.peelAllowed);
+    P.reqPeel[0] = Math.max((pl + rel) * M.peelAllowed, P.st.feet[0].peel * 1.3); P.reqPeel[1] = Math.max((pr + rel) * M.peelAllowed, P.st.feet[1].peel * 1.3);
+    const rise = 0.145 * Math.sin(Math.min(44, Math.min(pl, pr) + rel) * D2R * M.peelAllowed * P.peelGate);
     T[PY] += rise * 0.9;
-    T[PX] += midX + clamp(T[WS], -1, 1) * halfW * 0.5;
-    T[PZ] += midZ + 0.012 + 0.012;
-    // balance: keep the whole-body center of mass over the feet (upper body lean measured last frame)
-    T[PX] -= 0.7 * P.lean[0]; T[PZ] -= 0.7 * P.lean[1];
-    const comX = T[PX] + 0.75 * P.lean[0], comZ = T[PZ] + 0.75 * P.lean[1];
-    const minX = Math.min(ax0, ax1) + 0.015, maxX = Math.max(ax0, ax1) - 0.015;
-    const minZ = Math.min(az0, az1) - 0.05, maxZ = Math.max(F[0].bz, F[1].bz) - 0.03;
-    if (comX < minX) T[PX] += minX - comX; else if (comX > maxX) T[PX] -= comX - maxX;
-    if (comZ < minZ) T[PZ] += minZ - comZ; else if (comZ > maxZ) T[PZ] -= comZ - maxZ;
+    T[PX] += midX + clamp(P.X[WS], -1, 1) * halfW * 0.95;
+    T[PZ] += midZ + 0.012 + 0.012 + 0.09 * clamp(Math.min(pl, pr) + rel, 0, 30) / 30 * P.peelGate * M.peelAllowed; // heels up: the body moves over the balls
+    balance(P, T);
+  }
+
+  // Centre of mass over the feet. The whole-body COM comes from last frame's skeleton (measure); its offset from the
+  // pelvis is added to the pelvis target. The support polygon is the hull of the heel, ball and toe contacts that are on
+  // the floor (so a peeled heel moves the support region forward onto the ball). A foot may only leave the floor when
+  // the COM is already inside the other foot's polygon (gate), and the pelvis target is moved to keep the COM inside.
+  function balance(P, T) {
+    if (!P.comReady) return;
+    const cx = P.com[0], cz = P.com[2];
+    for (let s = 0; s < 2; s++) {
+      const o = 1 - s;
+      if (P.fn[o] < 1) { P.gate[s] = 1; continue; }
+      const m = buildHull(P.fx[o], P.fz[o], P.fn[o]);
+      const d = hullQuery(m, cx, cz);
+      const h = clamp(P.st.feet[s].lift / 0.015, 0, 1);
+      P.gate[s] = smoothstep(0.004 - 0.024 * h, 0.016 - 0.014 * h, d);
+    }
+    // the region the weight has to stay over: the contacts now, minus the heel of a foot that is about to peel (its
+    // support moves forward onto the ball). The heel only lifts once the COM is already inside that region.
+    let n = 0;
+    for (let s = 0; s < 2; s++) { const cnt = P.fn[s] - (P.reqPeel[s] > 3 ? P.hn[s] : 0); for (let i = 0; i < cnt; i++) { _ux[n] = P.fx[s][i]; _uz[n] = P.fz[s][i]; n++; } }
+    if (n >= 3) P.peelGate = smoothstep(-0.01, 0.006, hullQuery(buildHull(_ux, _uz, n), cx, cz)); else P.peelGate = 1;
+    let tx = 0, tz = 0;
+    if (n >= 3) {
+      const m = buildHull(_ux, _uz, n);
+      const gx = REST_PEL[0] + T[PX] + P.comOff[0], gz = REST_PEL[2] + T[PZ] + P.comOff[1];
+      const d = hullQuery(m, gx, gz);
+      if (m >= 3 && d < 0.012) {
+        const dx = _hcx - _qx, dz = _hcz - _qz, L2 = Math.hypot(dx, dz) || 1, inset = Math.min(0.012, L2 * 0.5);
+        tx = _qx + dx / L2 * inset - gx; tz = _qz + dz / L2 * inset - gz;
+      }
+    }
+    // a foot about to lift: aim the COM well inside the other foot's polygon (the weight moves before the foot leaves)
+    if (P.unW > 0.01) {
+      const o = 1 - P.unSide;
+      if (P.fn[o] >= 3) {
+        const m = buildHull(P.fx[o], P.fz[o], P.fn[o]);
+        const gx = REST_PEL[0] + T[PX] + P.comOff[0], gz = REST_PEL[2] + T[PZ] + P.comOff[1];
+        const d = hullQuery(m, gx, gz);
+        let ux = 0, uz = 0;
+        if (m >= 3 && d < 0.022) {
+          const dx = _hcx - _qx, dz = _hcz - _qz, L2 = Math.hypot(dx, dz) || 1, inset = Math.min(0.022, L2 * 0.6);
+          ux = _qx + dx / L2 * inset - gx; uz = _qz + dz / L2 * inset - gz;
+        }
+        const w = P.unW; tx += (ux - tx) * w; tz += (uz - tz) * w;
+      }
+    }
+    P.balCorr[0] = cd2(P.balX, tx, 15, P.dt); P.balCorr[1] = cd2(P.balZ, tz, 15, P.dt);
+    T[PX] += P.balCorr[0]; T[PZ] += P.balCorr[1];
+    // the pelvis moving forward over the balls of the feet is answered by the trunk leaning back
+    const lb = clamp(P.balCorr[1], 0, 0.15);
+    T[T3(0, 0)] -= lb * 20; spreadSpine(T, 0, -lb * 35, 0, 0);
   }
 
   const DF = new Float32Array(3);
@@ -405,12 +521,36 @@ export function createEngine(THREE, { vocab } = {}) {
     if (_v.z < -0.2 && Math.abs(yaw) > 100) yaw = Math.sign(yaw) * 75; // never try to look straight behind
     yaw = clamp(yaw, -75, 75); pitch = clamp(pitch, -25, G.mode === 1 ? 34 : 26);
     const w = clamp(P.X[GW], 0, 1) * (1 - 0.7 * M.gazeAway);
-    T[T3(7, 2)] += w * yaw * 0.3; T[T3(8, 2)] += w * yaw * 0.3; T[T3(9, 2)] += w * yaw * 0.4;
-    // nod mostly at the head, keep the neck long; a level, lifted carriage by default
-    T[T3(7, 0)] += w * (pitch * 0.12 - 3); T[T3(8, 0)] += w * (pitch * 0.16 - 1.5); T[T3(9, 0)] += w * (pitch * 0.72 + 1.5);
-    // the head keeps the eyes level: cancel the trunk's lateral tilt a little
-    let tilt = 0; for (let i = 0; i <= 6; i++) tilt += T[T3(i, 1)];
-    T[T3(8, 1)] -= w * tilt * 0.25; T[T3(9, 1)] -= w * tilt * 0.3;
+    // the gaze target jumps every 1 to 4 s: the angles the head chases are smoothed (two critically damped stages)
+    if (!G.init) { G.ya.x1 = G.ya.x2 = yaw; G.pi.x1 = G.pi.x2 = pitch; G.init = true; }
+    const yawS = cd2(G.ya, yaw, 4.2, P.dts), pitS = cd2(G.pi, pitch, 4.2, P.dts);
+    T[T3(7, 2)] += w * yawS * 0.3; T[T3(8, 2)] += w * yawS * 0.3; T[T3(9, 2)] += w * yawS * 0.4;
+    // nod mostly at the head, keep the neck long; a level, lifted carriage by default. The head follows the chest
+    // (trunkChain); there is no tilt cancellation, a quality that wants an isolated head adds its own counter-rotation.
+    T[T3(7, 0)] += w * (pitS * 0.12 - 3); T[T3(8, 0)] += w * (pitS * 0.16 - 1.5); T[T3(9, 0)] += w * (pitS * 0.72 + 1.5);
+  }
+
+  // The pelvis-to-head chain as followers: each segment's moving part is mostly the delayed (two critically damped
+  // stages, about 0.1 s) moving part of the segment below, plus a small part of its own. Slow postures (a running
+  // baseline per channel) pass straight through. A wave started low travels up through the chest, neck and head as
+  // one connected motion, and the head follows the chest.
+  function trunkChain(P) {
+    const T = P.T, C = P.chain, M = P.mods, dt = P.dt;
+    if (!C.init) { for (let c = 0; c < 30; c++) C.b[c] = T[c]; C.init = true; }
+    const aB = 1 - Math.exp(-dt / 1.0), aF = 1 - Math.exp(-dt / (0.05 * M.chainTau));
+    for (let k = 0; k < 3; k++) {
+      for (let i = 0; i < NTR; i++) {
+        const c = T3(i, k);
+        C.b[c] += (T[c] - C.b[c]) * aB;
+        let dyn = T[c] - C.b[c];
+        if (i > 0) {
+          const beta = Math.min(0.9, CHAIN_BETA[i] * M.chain), inh = (i === 1 ? M.pelvisCouple : 1) * C.f2[c - 3];
+          dyn = (1 - beta) * dyn + beta * inh;
+          T[c] = C.b[c] + dyn;
+        }
+        C.f1[c] += (dyn - C.f1[c]) * aF; C.f2[c] += (C.f1[c] - C.f2[c]) * aF;
+      }
+    }
   }
 
   function followThrough(P) {
@@ -448,30 +588,53 @@ export function createEngine(THREE, { vocab } = {}) {
   function feetOut(P) {
     const C = P.C, M = P.mods, F = P.feet;
     for (let s = 0; s < 2; s++) {
-      const f = F[s], o = P.st.feet[s], S = f.step;
-      let peel = (Math.max(0, C[lc(s, L.PEEL)]) * 28 + Math.max(0, C[REL]) * 34) * M.peelAllowed;
-      let lift = Math.max(0, C[lc(s, L.LIFT)]) * M.liftAllowed, fwd = C[lc(s, L.LFWD)];
+      const f = F[s], o = P.st.feet[s], S = f.step, gate = P.gate[s];
+      let peel = (Math.max(0, C[lc(s, L.PEEL)]) * 28 + Math.max(0, C[REL]) * 34) * M.peelAllowed * P.peelGate;
+      // a foot only leaves the floor once the weight is over the other foot (gate), and its forward reach only
+      // starts once it is a few mm in the air (no slide on the floor)
+      let lift = Math.max(0, C[lc(s, L.LIFT)]) * M.liftAllowed * gate;
+      const fwd = C[lc(s, L.LFWD)] * smoothstep(0.003, 0.02, lift);
       o.bx = f.bx; o.bz = f.bz; o.yaw = f.yaw;
       if (S.on) {
-        S.t += P.dt;
-        const u = Math.min(1, S.t / S.dur);
-        if (u < 0.22) peel += 26 * smoothstep(0, 0.22, u);
+        // heel up, ball down, weight moving to the other foot; the swing starts only when the foot is unloaded
+        const lim = 0.22 * S.dur;
+        if (S.t < lim && S.t + P.dt >= lim && gate < 0.98) {
+          S.wait += P.dt; S.t = Math.min(S.t + P.dt, lim - 1e-4);
+          // the weight never got over the other foot: the step is dropped, the foot stays planted
+          if (S.wait > 1.5) { S.on = false; P.stepping = false; P.stepCool = 0.8; S.t = 0; S.wait = 0; }
+        } else if (S.t >= lim && S.t < 0.88 * S.dur && gate < 0.5) {
+          // the weight left the supporting foot mid swing: wait in place; if it does not come back the foot stays where it is
+          S.wait += P.dt;
+          if (S.wait > 1.5) {
+            const w = (S.t / S.dur - 0.22) / 0.66, sm = smoother(clamp((w - 0.16) / 0.68, 0, 1));
+            f.bx = S.x0 + (S.x1 - S.x0) * sm; f.bz = S.z0 + (S.z1 - S.z0) * sm; f.yaw = S.y0 + (S.y1 - S.y0) * sm;
+            S.on = false; P.stepping = false; P.stepCool = 0.8; S.t = 0; S.wait = 0;
+          }
+        } else S.t += P.dt;
+        let sp = 0;
+        const u = S.on ? Math.min(1, S.t / S.dur) : 0;
+        if (!S.on) { o.bx = f.bx; o.bz = f.bz; o.yaw = f.yaw; sp = f.px; }
+        else if (u < 0.22) sp = 26 * smoothstep(0, 0.22, u);
         else if (u < 0.88) {
-          const w = (u - 0.22) / 0.66, sm = smoother(w);
+          const w = (u - 0.22) / 0.66, sm = smoother(clamp((w - 0.16) / 0.68, 0, 1)); // moves sideways only while clear of the floor
           o.bx = S.x0 + (S.x1 - S.x0) * sm; o.bz = S.z0 + (S.z1 - S.z0) * sm; o.yaw = S.y0 + (S.y1 - S.y0) * sm;
-          lift += S.h * Math.sin(Math.PI * w); peel += 26 * (1 - smoothstep(0.6, 1, w));
+          lift += S.h * Math.pow(Math.sin(Math.PI * w), 1.6) * gate; sp = 10 + 16 * (1 - smoothstep(0.55, 1, w));
         } else {
           o.bx = S.x1; o.bz = S.z1; o.yaw = S.y1;
-          peel += 26 * (1 - smoothstep(0.88, 1, u)) * 0.3;
+          sp = 10 * (1 - smoothstep(0.88, 1, u)); // the ball lands first, then the heel rolls down
         }
-        if (u >= 1) { S.on = false; f.bx = S.x1; f.bz = S.z1; f.yaw = S.y1; P.stepping = false; P.stepCool = 0.25 + P.rng() * 0.3; }
+        peel += sp; f.px = sp;
+        if (S.on && u >= 1) { S.on = false; f.bx = S.x1; f.bz = S.z1; f.yaw = S.y1; P.stepping = false; P.stepCool = 0.25 + P.rng() * 0.3; }
       }
+      else if (f.px > 0.01) { f.px *= Math.exp(-P.dt / 0.3); peel += f.px; } // a dropped step lets the heel down gently
       o.peel = Math.min(44, peel);
       o.lift = lift; o.liftFwd = fwd;
       o.point = 22 * clamp(lift / 0.08, 0, 1);
       o.inv = clamp(C[lc(s, L.INV)], -5, 25);
       o.knee = clamp(C[lc(s, L.KNEE)], -30, 45);
-      o.toe = (lift > 0.004 ? 0 : o.peel) + C[lc(s, L.TOE)] * (lift > 0.004 ? 0.4 : 1);
+      // toes stay flat on the floor while the foot rolls, relax as the foot leaves it (the rig keeps the tip above the floor)
+      const air = smoothstep(0.004, 0.03, lift);
+      o.toe = o.peel * (1 - air) + C[lc(s, L.TOE)] * (1 - 0.6 * air);
     }
   }
 
@@ -487,7 +650,30 @@ export function createEngine(THREE, { vocab } = {}) {
       energy += sp;
     }
     Cp.set(C);
-    // upper body lean for balance (COM of the trunk, head and arms relative to the pelvis)
+    // whole-body centre of mass and the floor contacts, for the balance controller of the next frame
+    {
+      let gx = 0, gy = 0, gz = 0;
+      for (let i = 0; i < SEGM.length; i++) {
+        const sg = SEGM[i];
+        _vm.set(sg.v[0], sg.v[1], sg.v[2]).applyQuaternion(P.wq[sg.i]).add(P.wp[sg.i]);
+        gx += _vm.x * sg.m; gy += _vm.y * sg.m; gz += _vm.z * sg.m;
+      }
+      const pp = P.wp[BONE_INDEX.pelvis];
+      if (!P.comReady) { P.comOff[0] = gx - pp.x; P.comOff[1] = gz - pp.z; P.comReady = true; }
+      else { const a = Math.min(1, P.dt * 25); P.comOff[0] += (gx - pp.x - P.comOff[0]) * a; P.comOff[1] += (gz - pp.z - P.comOff[1]) * a; }
+      P.com[0] = gx; P.com[1] = gy; P.com[2] = gz;
+      for (let s = 0; s < 2; s++) {
+        const H = P.cpH[s], B = P.cpB[s], Tp = P.cpT[s], cr = P.crel[s], X_ = P.fx[s], Z_ = P.fz[s];
+        let fx = B.x - H.x, fz = B.z - H.z; const fl = Math.hypot(fx, fz) || 1; fx /= fl; fz /= fl;
+        const lx = -fz, lz = fx; let n = 0;
+        if (cr[1] < 0.008) { X_[n] = B.x + lx * 0.045; Z_[n++] = B.z + lz * 0.045; X_[n] = B.x - lx * 0.045; Z_[n++] = B.z - lz * 0.045; }
+        if (cr[2] < 0.008) { X_[n] = Tp.x; Z_[n++] = Tp.z; }
+        if (cr[0] < 0.008) { X_[n] = H.x + lx * 0.03; Z_[n++] = H.z + lz * 0.03; X_[n] = H.x - lx * 0.03; Z_[n++] = H.z - lz * 0.03; }
+        P.fn[s] = n; P.hn[s] = cr[0] < 0.008 ? 2 : 0;
+      }
+      { let n = 0; for (let s = 0; s < 2; s++) for (let i = 0; i < P.fn[s]; i++) { _ux[n] = P.fx[s][i]; _uz[n] = P.fz[s][i]; n++; } P.comD = n >= 3 ? hullQuery(buildHull(_ux, _uz, n), gx, gz) : 0; }
+    }
+    // upper body lean (kept for the harness)
     const wp = P.wp, pel = wp[BONE_INDEX.pelvis];
     let lx = 0, lz = 0;
     for (let i = 0; i < BIDX.length; i++) { const p = wp[BIDX[i]]; lx += (p.x - pel.x) * BW[i]; lz += (p.z - pel.z) * BW[i]; }
@@ -558,21 +744,23 @@ export function createEngine(THREE, { vocab } = {}) {
     if (P.floatBoost > 0.1) { P.shapeBoost.vUp = 4; P.shapeBoost.armsOut = 4; }
     let drive = 0, sumD = 0;
     for (const id of QUALITY_ORDER) {
-      let v = P.lv[id] || 0; if (id === 'float') v = Math.max(v, 0.15 + P.floatBoost);
+      let v = P.lv[id] || 0; if (id === 'float') v = Math.max(v, P.floatBoost); // the idle float floor stays out of shape choice
       // use the layer target too, so the cue's shape is picked as soon as the cue is absorbed
       const pl = P.lay.get(id); if (pl && pl.tgt > v && pl.t >= 0) v = 0.5 * (v + pl.tgt);
       const d = v * (Q[id].shapeGain || 0); sumD += d; if (d > drive) drive = d;
     }
     P.shapeDrive = clamp(drive + 0.15 * (sumD - drive), 0, 1) * (1 - 0.3 * (P.lv.dolfi || 0));
     updateShapes(P, P.dts / M.holdMul, prefs, false);
-    const amtT = 0.75 + 0.25 * clamp(P.shapeDrive * 1.5, 0, 1);
+    // posture size follows the intensity: low intensity keeps the arms close to the body, overhead needs near full
+    const inten = clamp(P.shapeDrive / 0.8, 0, 1);
+    const amtT = 0.45 + 0.55 * inten, armAmt = 0.3 + 0.7 * Math.pow(inten, 1.4);
     P.shapeAmt += (amtT - P.shapeAmt) * Math.min(1, P.dts * 0.7);
     const cur = P.shape.cur, amt = P.shapeAmt;
     for (let c = 0; c < NCH; c++) T[c] += cur[c] * (c === GW || c === ac(0, A.HANG) || c === ac(1, A.HANG) ? Math.min(1, amt * 1.4) : amt);
     // each arm's own posture, unless the body shape owns the arms (folds, V up, side bend...)
     updateArms(P, P.dts / M.holdMul, armPrefs);
     const free = 1 - P.shape.own;
-    for (let s = 0; s < 2; s++) { const ap = P.arms[s].cur, o = ac(s, 0); for (let k = 0; k < ARMN; k++) T[o + k] += free * ap[k]; }
+    for (let s = 0; s < 2; s++) { const ap = P.arms[s].cur, o = ac(s, 0); for (let k = 0; k < ARMN; k++) T[o + k] += free * armAmt * ap[k]; }
     // always-on layer
     baseLayer(P);
     // generators
@@ -587,6 +775,7 @@ export function createEngine(THREE, { vocab } = {}) {
     coordinate(P);
     for (const id of QUALITY_ORDER) { const q = Q[id], v = P.lv[id] || 0; if (q.post && v > 0.001) q.post(P, v); }
     stance(P);
+    trunkChain(P);
     gaze(P, others);
     followThrough(P);
     springs(P);
@@ -673,7 +862,7 @@ export function createEngine(THREE, { vocab } = {}) {
   // debug view for the harness (not part of the contract)
   function debug(performerId) {
     const P = performers.get(performerId); if (!P) return null;
-    return { C: P.C, T: P.T, arms: P.arms.map(a => a.name), zombieHits: P.zombieHits || 0, own: P.shape.own, feet: P.st.feet, plants: P.feet, ballW: P.ballW, heelW: P.heelW, airborne: P.airborne, stepping: P.stepping, shape: P.shape.name, shapeAmt: P.shapeAmt, collide: P.collide, reachDrop: P.reachDrop, lv: P.lv, bias: P.bias, tempo: P.tempo };
+    return { comD: P.comD, gate: P.gate, com: P.com, balCorr: P.balCorr, fn: P.fn, fx: P.fx, fz: P.fz, crel: P.crel, C: P.C, T: P.T, arms: P.arms.map(a => a.name), zombieHits: P.zombieHits || 0, own: P.shape.own, feet: P.st.feet, plants: P.feet, ballW: P.ballW, heelW: P.heelW, airborne: P.airborne, stepping: P.stepping, shape: P.shape.name, shapeAmt: P.shapeAmt, collide: P.collide, reachDrop: P.reachDrop, lv: P.lv, bias: P.bias, tempo: P.tempo };
   }
 
   return { addPerformer, removePerformer, setLayer, toggleLayer, releaseAll, getLayers, accent, getActivity, getGlowPoints, getFleshParams, update, on, setThread, debug };

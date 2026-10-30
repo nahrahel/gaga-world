@@ -1,6 +1,6 @@
 # Motion lab baseline
 
-2026-10-30T01:41:49.293Z. Fixed dt 1/60, seed 7, soloist, warmup 8 s then 30 s recorded unless noted. 
+2026-10-30T01:46:11.781Z. Fixed dt 1/60, seed 7, soloist, warmup 8 s then 30 s recorded unless noted. 
 
 Snap = joint angular acceleration above 3000 deg/s^2 (velocity change over 50 deg/s inside one frame); snaps/min counts snap events (frames merged within 0.1 s) in the upper body (trunk, neck, head, arms) or the legs and feet. Jerk kurtosis: 3 = smooth Gaussian texture, higher = impulsive. Trunk wave r: mean |peak cross-correlation| of neighbouring spine01..06 lateral bend angles (6 s trend removed); trunk lag: spine01 to spine06 lag (positive = wave travels up); phase on trunk: that lag divided by the wave period (a readable S-wave needs about 0.5); chest>head r: spine06 vs head lateral bend (negative = the head cancels the wave); sagittal amp: mean sagittal wave amplitude per spine joint. Spine sat: share of frames with a spine joint inside the soft-clamp zone (over 75% of its limit).
 

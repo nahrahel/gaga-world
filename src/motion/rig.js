@@ -3,7 +3,7 @@
 // channel vector into bone quaternions (same axes and sign conventions as skeleton.js jointQuat, with a
 // soft clamp to the joint limits), solves the legs with two-bone IK onto planted feet, aims the upper arms
 // by direction (elevation + plane), pushes arms out of the torso, and keeps a root-space FK cache.
-import { BONES, BONE_INDEX } from '../skeleton.js';
+import { BONES, BONE_INDEX, LANDMARKS } from '../skeleton.js';
 
 // ---------------------------------------------------------------- channel layout
 export const TRUNK_BONES = ['pelvis', 'spine01', 'spine02', 'spine03', 'spine04', 'spine05', 'spine06', 'neck01', 'neck02', 'head'];
@@ -68,6 +68,7 @@ function vlen(a) { return Math.hypot(a[0], a[1], a[2]); }
 function vnorm(a) { const l = vlen(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
 
 // Soft clamp: linear in the central 75% of the range, then eases into the limit (C1 continuous).
+function smoothstep01(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
 export function softClamp(x, lo, hi) {
   if (hi - lo < 1e-6) return lo;
   const c = 0.5 * (lo + hi), h = 0.5 * (hi - lo);
@@ -115,12 +116,23 @@ export function createRig(THREE) {
     };
   });
 
+  // floor contact points per foot (same landmarks the motion lab uses): heel on the foot bone, ball on the toes
+  // bone, toe tip at the end of the toes bone. Heights are measured against the rest pose (flat foot = 0).
+  const CP = [0, 1].map(s => {
+    const sx = SFX[s], hl = LANDMARKS['heel' + sx], fb = LANDMARKS['football' + sx];
+    const fo = BONES[BI['foot' + sx]], tb = BONES[BI['toes' + sx]];
+    return { heelOff: hl.offset, heelRest: fo.head[1] + hl.offset[1], ballOff: fb.offset, ballRest: tb.head[1] + fb.offset[1],
+      tipOff: [tb.tail[0] - tb.head[0], tb.tail[1] - tb.head[1] - 0.012, tb.tail[2] - tb.head[2]], tipRest: tb.tail[1] - 0.012 };
+  });
+  const FLOOR_TIP = 0.0012, AIR_TIP = 0.011; // toe tip clearance: 1 mm on the floor, 12 mm once the foot is in the air
+
   // ------------------------------------------------------------ performer setup
   function setupPerformer(P, figure) {
+    P.cpH = [V(), V()]; P.cpB = [V(), V()]; P.cpT = [V(), V()]; P.crel = [[0, 0, 0], [0, 0, 0]];
     P.b = BONES.map(bn => figure.byName ? figure.byName[bn.name] : figure.bones[BI[bn.name]]);
     P.wq = Array.from({ length: NB }, Q); P.wp = Array.from({ length: NB }, V);
     P.ankle = [V(), V()]; P.footQ = [Q(), Q()]; P.pole = [V(), V()]; P.airborne = [false, false];
-    P.ballW = [V(), V()]; P.heelW = [V(), V()];
+    P.ballW = [V(), V()]; P.heelW = [V(), V()]; P.toeOut = [0, 0]; P.liftNow = [0, 0];
     P.collide = [0, 0];
     P.thr = [{ w: 0, x: 0, y: 0, z: 0 }, { w: 0, x: 0, y: 0, z: 0 }];
   }
@@ -144,8 +156,8 @@ export function createRig(THREE) {
     q3.setFromAxisAngle(Z, -sg * invDeg * D2R);
     const fq = P.footQ[s].copy(q1).multiply(q2).multiply(q3);
     // pivot: ball, shifted to the outer edge while inverting
-    const out = Math.min(1, Math.abs(invDeg) / 6) * sg * 0.04;
-    v1.set(out, -0.012, 0); // pivot offset from ball (rest frame)
+    const out = Math.min(1, Math.abs(invDeg) / 6) * sg * 0.025;
+    v1.set(out, 0, 0); // pivot offset from the ball joint (rest frame): the toes lie flat and the foot hinges at the ball joint, so peeling never slides the ball
     v2.copy(C.ankleFromBall).sub(v1).applyQuaternion(fq); // pivot -> ankle
     v3.copy(v1).applyQuaternion(q1);                        // ball -> pivot (yaw only, pivot stays on floor)
     const a = P.ankle[s].set(bx, C.ballRest.y, bz).add(v3).add(v2);
@@ -184,9 +196,24 @@ export function createRig(THREE) {
     // foot: world orientation requested by the stance
     b[C.foot].quaternion.copy(P.wq[C.shin]).invert().multiply(P.footQ[s]);
     fk(P, C.foot);
-    anat(C.toes, toeFlexDeg, 0, 0, b[C.toes].quaternion);
-    fk(P, C.toes);
-    // contact points for debugging
+    // toes: the requested flex, then extended just enough that the tip never goes below the floor
+    const cp = CP[s];
+    let fl = toeFlexDeg;
+    anat(C.toes, fl, 0, 0, b[C.toes].quaternion); fk(P, C.toes);
+    const clr = FLOOR_TIP + AIR_TIP * smoothstep01((P.liftNow[s] - 0.006) / 0.014);
+    let rel = pointOf(P, C.toes, cp.tipOff[0], cp.tipOff[1], cp.tipOff[2], P.cpT[s]).y - cp.tipRest;
+    if (rel < clr) {
+      anat(C.toes, fl + 2, 0, 0, b[C.toes].quaternion); fk(P, C.toes);
+      const r1 = pointOf(P, C.toes, cp.tipOff[0], cp.tipOff[1], cp.tipOff[2], P.cpT[s]).y - cp.tipRest, slope = (r1 - rel) / 2;
+      if (slope > 1e-5) fl += Math.min(70, (clr - rel) / slope);
+      anat(C.toes, fl, 0, 0, b[C.toes].quaternion); fk(P, C.toes);
+      pointOf(P, C.toes, cp.tipOff[0], cp.tipOff[1], cp.tipOff[2], P.cpT[s]);
+    }
+    P.toeOut[s] = fl;
+    // contact points (root space) and their heights above the rest floor
+    pointOf(P, C.foot, cp.heelOff[0], cp.heelOff[1], cp.heelOff[2], P.cpH[s]);
+    pointOf(P, C.toes, cp.ballOff[0], cp.ballOff[1], cp.ballOff[2], P.cpB[s]);
+    const cr = P.crel[s]; cr[0] = P.cpH[s].y - cp.heelRest; cr[1] = P.cpB[s].y - cp.ballRest; cr[2] = P.cpT[s].y - cp.tipRest;
     pointOf(P, C.foot, C.ballFromAnkle.x, C.ballFromAnkle.y - 0.012, C.ballFromAnkle.z, P.ballW[s]);
     pointOf(P, C.foot, 0, -0.06, -0.065, P.heelW[s]);
   }
@@ -218,20 +245,32 @@ export function createRig(THREE) {
   // collision volumes (in the frame of a trunk bone): [bone, yMin, yMax, cz, rx, rz]
   const SLABS = [[BI.pelvis, -0.12, 0.08, 0.02, 0.165, 0.115], [BI.spine02, -0.02, 0.17, 0.05, 0.135, 0.11], [BI.spine05, -0.09, 0.15, 0.06, 0.15, 0.12]];
   const push = V(), bestPush = V(), lp = V(), tp = V(), qinv = Q();
-  function penetration(P, pt, r, s, outPush) {
+  function penetration(P, pt, r, s, outPush, soft) {
     outPush.set(0, 0, 0); let best = 0;
     for (let si = 0; si < SLABS.length; si++) {
       const SL = SLABS[si], bi = SL[0], y0 = SL[1], y1 = SL[2], cz = SL[3], rx = SL[4], rz = SL[5];
       lp.copy(pt).sub(P.wp[bi]).applyQuaternion(qinv.copy(P.wq[bi]).invert());
-      if (lp.y < y0 || lp.y > y1) continue;
-      const ax = rx + r, az = rz + r, x = lp.x, z = lp.z - cz;
+      // the slab fades out over 3 cm above and below its range, so the push is continuous in height
+      const yOut = lp.y < y0 ? y0 - lp.y : lp.y > y1 ? lp.y - y1 : 0;
+      if (yOut >= 0.03) continue;
+      const yf = 1 - smoothstep01(yOut / 0.03);
+      const x = lp.x, z = lp.z - cz;
+      // soft margin in front of the pelvis and groin: a continuous repulsive field for hands
+      const mg = si === 0 ? soft * smoothstep01((z + 0.03) / 0.08) : 0;
+      const ax = rx + r + mg, az = rz + r + mg;
       const e = Math.sqrt((x / ax) * (x / ax) + (z / az) * (z / az));
       if (e >= 1) continue;
       let px, pz;
       if (e < 0.08) { px = SG[s] * ax; pz = 0; } else { px = x * (1 / e - 1); pz = z * (1 / e - 1); }
-      let m = Math.hypot(px, pz);
-      // in front of the trunk the arm is carried forward (hands in front of the belly, never akimbo on the hip)
-      if (z > -0.03 && bi !== BI.spine05) { const f = Math.min(1, (z + 0.03) / 0.08); px *= 1 - 0.6 * f; pz = Math.max(pz, m * (0.4 + 0.6 * f)); m = Math.hypot(px, pz); }
+      // in front of the pelvis a hand is moved sideways, toward its own hip, never forward onto the belly or groin.
+      // The push grows smoothly with depth (zero at the edge of the zone), so nothing snaps as a hand passes through.
+      if (z > -0.03 && bi !== BI.spine05) {
+        const f = Math.min(1, (z + 0.03) / 0.08);
+        const xe = ax * Math.sqrt(Math.max(0, 1 - (z / az) * (z / az)));
+        px += f * (SG[s] * xe * (1 - e) - px); pz *= 1 - f;
+      }
+      px *= yf; pz *= yf;
+      const m = Math.hypot(px, pz);
       if (m > best) { best = m; outPush.set(px, 0, pz).applyQuaternion(P.wq[bi]); }
     }
     // head sphere
@@ -245,7 +284,7 @@ export function createRig(THREE) {
     return best;
   }
 
-  const armPts = [V(), V(), V(), V()], ARM_R = [0.042, 0.038, 0.032, 0.03];
+  const armPts = [V(), V(), V(), V()], ARM_R = [0.042, 0.038, 0.032, 0.03], SOFT = [0, 0.012, 0.03, 0.03];
   function armFK(P, C) { fk(P, C.up); fk(P, C.fore); fk(P, C.hand); }
   function armCollide(P, s) {
     const C = S[s]; let total = 0;
@@ -255,7 +294,7 @@ export function createRig(THREE) {
       pointOf(P, C.hand, 0, 0, 0, armPts[2]);                              // wrist
       pointOf(P, C.hand, C.armDir.x * C.handLen, C.armDir.y * C.handLen, 0, armPts[3]);
       let best = 0, bi = -1;
-      for (let k = 0; k < 4; k++) { const m = penetration(P, armPts[k], ARM_R[k], s, push); if (m > best) { best = m; bi = k; bestPush.copy(push); } }
+      for (let k = 0; k < 4; k++) { const m = penetration(P, armPts[k], ARM_R[k], s, push, SOFT[k]); if (m > best) { best = m; bi = k; bestPush.copy(push); } }
       if (best < 0.002) break;
       total += best;
       const sh = P.wp[C.up];
@@ -279,7 +318,7 @@ export function createRig(THREE) {
     for (let i = 0; i < NTR; i++) anat(TRUNK_IDX[i], c[TR + 3 * i], c[TR + 3 * i + 1], c[TR + 3 * i + 2], b[TRUNK_IDX[i]].quaternion);
     // feet first (they constrain the pelvis height)
     for (let s = 0; s < 2; s++) {
-      const F = st.feet[s];
+      const F = st.feet[s]; P.liftNow[s] = F.lift;
       footPose(P, s, F.bx, F.bz, F.yaw, F.peel, F.inv, F.lift, F.liftFwd, F.point);
       const kn = (F.yaw + SG[s] * F.knee) * D2R;
       P.pole[s].set(Math.sin(kn), 0, Math.cos(kn));
@@ -313,7 +352,7 @@ export function createRig(THREE) {
       let tw = c[o + A.UTW];
       // droop: roll the upper arm so the elbow bend points toward the floor (forearm and hand dangle from a floating arm)
       const dr = Math.min(1, Math.max(0, c[o + A.DROOP])) * Math.min(1, Math.max(0, (elev - 25) / 35)) * Math.min(1, Math.max(0, (118 - elev) / 22));
-      if (dr > 0.01) {
+      if (dr > 1e-5) { // no threshold: the roll grows continuously from zero
         const bd = v1.copy(C.bendRest).applyQuaternion(q3);                       // bend direction after the swing
         const gd = v2.copy(DOWN).applyQuaternion(qinv.copy(P.wq[C.clav]).invert());
         gd.addScaledVector(uDir, -gd.dot(uDir));
@@ -369,8 +408,12 @@ export function createRig(THREE) {
       anat(C.thumb[1], Math.max(0, tc) * 42, 0, 0, b[C.thumb[1]].quaternion);
       anat(C.thumb[2], Math.max(0, tc) * 55, 0, 0, b[C.thumb[2]].quaternion);
     }
-    // legs
-    for (let s = 0; s < 2; s++) legIK(P, s, st.feet[s].toe);
+    // legs; a foot whose heel or toe tip still ends up under the floor is raised and solved again
+    for (let s = 0; s < 2; s++) {
+      legIK(P, s, st.feet[s].toe);
+      const cr = P.crel[s], low = Math.min(cr[0], cr[2]);
+      if (low < -0.0015) { P.ankle[s].y += -low + 0.0004; legIK(P, s, st.feet[s].toe); }
+    }
   }
 
   // full FK for every bone (used by the harness and for glow positions)

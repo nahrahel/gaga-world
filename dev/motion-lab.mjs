@@ -17,6 +17,7 @@ const TIER1 = ['float', 'lunas', 'biba', 'lena', 'snake', 'flesh', 'balls', 'cur
 const S = [];
 S.push({ name: 'idle', layers: {} });
 for (const id of TIER1) S.push({ name: id, layers: { [id]: 0.7 } });
+for (const id of ['tashi', 'dolfi']) S.push({ name: id, layers: { [id]: 0.7 } }); // the other calm words (generator share only)
 S.push({ name: 'snake@0.8', layers: { snake: 0.8 } });
 S.push({ name: 'snake+float', layers: { snake: 0.8, float: 0.6 } });
 S.push({ name: 'trans lena>snake', warmup: 2, duration: 40, events: [{ t: 10, set: { lena: 0.7 } }, { t: 25, set: { lena: 0 } }, { t: 26, set: { snake: 0.7 } }] });
@@ -26,7 +27,7 @@ S.push({ name: 'stack4', layers: { float: 0.6, lunas: 0.6, lena: 0.6, snake: 0.6
 S.push({ name: 'stack4b', layers: { shake: 0.6, thick: 0.6, time: 0.6, groove: 0.5 } });
 S.push({ name: 'edge dt', dtSeq: 'edge', layers: { float: 0.5, shake: 0.5 } });
 // generator ablations: the word's own generator switched off, everything else identical
-const ABL = ['float', 'lunas', 'lena', 'snake', 'balls', 'curves', 'shake', 'quake', 'boil', 'thick', 'groove', 'silly'];
+const ABL = ['float', 'lunas', 'lena', 'snake', 'balls', 'curves', 'shake', 'quake', 'boil', 'thick', 'groove', 'silly', 'biba', 'flesh', 'time', 'tashi', 'dolfi'];
 for (const id of ABL) S.push({ name: `${id} (gen off)`, layers: { [id]: 0.7 }, ablate: [id], ablation: true });
 S.push({ name: 'idle (repeat)', layers: {}, repeatOf: 'idle' });
 

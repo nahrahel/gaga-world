@@ -2,7 +2,7 @@
 // Every quality writes into the performer's channel targets (P.T, smoothed by springs), post-spring accents
 // (P.ACC, crisp), spring velocity kicks (P.V), or modifiers (P.mods). Signals are layered noise, traveling
 // waves and impulses; the only steady oscillators are the groove bounce and the countdown swings.
-import { n1, n2, n3, spow, clamp, smoothstep, smoother, burst, bump } from './noise.js';
+import { n1, n2, n3, spow, clamp, smoothstep, smoother, burst, bump, cd2 } from './noise.js';
 import { TR, PX, PY, PZ, A, L, ac, lc, STW, FYAW, REL, WS, GW, SG, NTR } from './rig.js';
 import { spreadSpine } from './shapes.js';
 import { LANDMARKS, BONE_BY_NAME } from '../skeleton.js';
@@ -33,6 +33,13 @@ export class DelayLine {
 }
 
 // --------------------------------------------------------------------------- helpers
+// A calm word sets the stage for its own movement: the generic background (small gestures, drift, quick posture
+// changes) steps back so what you see is the word's own pathway, not the idle shimmer.
+function calmMods(M, v, k = 1) {
+  M.gesture *= 1 - 0.8 * k * v; M.gestureHands *= 1 - 0.95 * k * v; M.gestureFeet *= 1 - 0.85 * k * v;
+  M.drift *= 1 - 0.5 * k * v; M.holdDrift *= 1 - 0.6 * k * v; M.holdMul *= 1 + 2.0 * k * v; M.fastScale *= 1 - 0.35 * k * v;
+  M.weightShift *= 1 - 0.6 * k * v; M.travel *= 1 - 0.7 * k * v;
+}
 function armAdd(T, s, k, v) { T[ac(s, k)] += v; }
 function legAdd(T, s, k, v) { T[lc(s, k)] += v; }
 function fingersAdd(T, s, curl, spr) { for (let f = 0; f < 5; f++) { T[ac(s, A.CURL + f)] += curl; T[ac(s, A.SPR + f)] += spr; } }
@@ -96,10 +103,12 @@ export function baseLayer(P) {
     const same = rng() < 0.22;
     W.target = same ? W.target * 0.4 : -Math.sign(W.target || 1) * (0.35 + 0.55 * rng());
   }
-  T[WS] += W.target * (0.55 + 0.35 * fl) * M.weightShift;
-  const free = W.target > 0 ? 1 : 0; // weight on the left -> right foot is free
-  legAdd(T, free, L.PEEL, Math.abs(W.target) * 0.3 * gf * M.peelAllowed);
-  legAdd(T, free, L.KNEE, Math.abs(W.target) * 3);
+  // the decision is smoothed (two critically damped stages) before anything reads it: no jump reaches the body
+  const wsv = cd2(W, W.target, 3.2, dts);
+  T[WS] += wsv * (0.55 + 0.35 * fl) * M.weightShift;
+  const free = wsv > 0 ? 1 : 0; // weight on the left -> right foot is free
+  legAdd(T, free, L.PEEL, Math.abs(wsv) * 0.3 * gf * M.peelAllowed);
+  legAdd(T, free, L.KNEE, Math.abs(wsv) * 3);
   // small gestures, distributed, aperiodic
   for (let i = 1; i <= 6; i++) {
     T[T3(i, 1)] += g * 1.3 * n2(tf * 0.9 - i * 0.04, s0 + 100 + i);
@@ -140,10 +149,10 @@ export function baseLayer(P) {
     const u = FE.t / FE.dur;
     if (u >= 1) { FE.t = -1; FE.wait = 2 + rng() * 2.5; }
     else {
-      const e = Math.sin(Math.PI * u);
+      const e = Math.pow(Math.sin(Math.PI * u), 1.6); // leaves and meets the floor at zero speed
       legAdd(T, FE.side, L.LIFT, FE.h * e);
       legAdd(T, FE.side, L.LFWD, FE.h * 0.4 * e);
-      T[WS] += SG[1 - FE.side] * 0.6 * Math.min(1, e * 3);
+      T[WS] += SG[1 - FE.side] * 0.6 * smoother(Math.min(1, Math.sin(Math.PI * u) * 1.7));
     }
   }
 }
@@ -257,7 +266,29 @@ Q.biba = {
   armPrefs: { hang: 1, brushThigh: 0.6 },
   regions: { pelvis: 0.8, spine: 0.7, center: 0.3, head: 0.2 },
   tempo: () => 0.1,
-  mod(P, v) { P.mods.gesture *= 1 - 0.15 * v; },
+  init(P) { P.q.biba = { a: P.rng() * TAU, b: P.rng() * TAU, c: P.rng() * TAU, d: P.rng() * TAU }; },
+  mod(P, v) {
+    calmMods(P.mods, v, 1);
+  },
+  // the tail lengthens and releases, the weight rocks from one sit bone to the other, the pelvis circles slowly
+  // under a spine that hangs from the head: its own movement, slow and heavy
+  gen(P, v) {
+    const T = P.T, st = P.q.biba, ts = P.ts, dts = P.dts, s0 = P.ns + 13000;
+    st.a += TAU * (0.3 + 0.06 * n2(ts * 0.05, s0)) * dts;
+    st.b += TAU * (0.22 + 0.05 * n2(ts * 0.04, s0 + 1)) * dts;
+    st.c += TAU * (0.17 + 0.04 * n2(ts * 0.05, s0 + 2)) * dts;
+    st.d += TAU * (0.26 + 0.05 * n2(ts * 0.045, s0 + 3)) * dts;
+    const tuck = Math.sin(st.a), rock = Math.sin(st.b), turn = Math.sin(st.c), knee = Math.sin(st.d);
+    T[T3(0, 0)] += v * (20 * tuck - 4); T[T3(0, 1)] += v * 18 * rock; T[T3(0, 2)] += v * 18 * turn;
+    T[PX] += v * 0.028 * Math.sin(st.b + 0.9); T[PZ] += v * 0.022 * Math.sin(st.a + 0.5);
+    T[PY] -= v * (0.018 + 0.016 * (0.5 + 0.5 * tuck));
+    spreadSpine(T, 0, v * -7 * tuck, v * -9 * rock, v * -6 * turn);
+    for (let s = 0; s < 2; s++) {
+      legAdd(T, s, L.KNEE, v * 14 * Math.sin(st.d + s * 1.9));
+      armAdd(T, s, A.UAZ, v * 30 * Math.sin(st.b + s * Math.PI + 0.4)); armAdd(T, s, A.UEL, v * 24 * Math.sin(st.c + s * 2.1) + 8 * v); armAdd(T, s, A.EF, v * 14 * Math.sin(st.a + s));
+    }
+    T[T3(9, 0)] += v * 5 * knee * 0.4;
+  },
   post(P, v) { // posture pass: runs after generators
     const T = P.T;
     for (let i = 1; i <= 6; i++) { const o = T3(i, 0); if (T[o] > 0) T[o] *= 1 - 0.65 * v; }
@@ -301,7 +332,7 @@ Q.lena = {
     T[PY] -= v * (0.015 + 0.02 * (0.5 - 0.5 * Math.cos(2 * ph)));
     T[T3(0, 0)] += tf_; T[T3(0, 1)] += ta; T[T3(0, 2)] += tt;
     // follow chain: world tilt of segment i follows the pelvis delayed by i * d, fading toward the head
-    const d = 0.11;
+    const d = 0.14;
     let pf = tf_, pa = ta, pt = tt;
     for (let i = 1; i <= 9; i++) {
       const g = Math.max(0, 1 - i * 0.09);
@@ -336,24 +367,25 @@ Q.snake = {
   mod(P, v) { P.mods.loose += 0.15 * v; },
   gen(P, v) {
     const T = P.T, ts = P.ts, s0 = P.ns + 4000, st = P.q.snake, dts = P.dts;
-    st.pl += TAU * (0.27 + 0.1 * n2(ts * 0.07, s0)) * dts;
-    st.ps += TAU * (0.22 + 0.08 * n2(ts * 0.06, s0 + 1)) * dts;
+    st.pl += TAU * (0.3 + 0.06 * n2(ts * 0.07, s0)) * dts;
+    st.ps += TAU * (0.28 + 0.06 * n2(ts * 0.06, s0 + 1)) * dts;
     st.pt += TAU * (0.16 + 0.06 * n2(ts * 0.05, s0 + 2)) * dts;
     const al = 0.75 + 0.35 * n2(ts * 0.05, s0 + 3), as = 0.6 + 0.4 * n2(ts * 0.045, s0 + 4), at = 0.25 + 0.5 * Math.max(0, n2(ts * 0.04, s0 + 5));
     const lat = al * Math.sin(st.pl) + 0.2 * n2(ts * 0.5, s0 + 6);
     const sag = as * Math.sin(st.ps) + 0.2 * n2(ts * 0.45, s0 + 7);
     const tw = at * Math.sin(st.pt);
     st.hist.push(ts, lat, sag, tw);
-    const upT = n1(ts * 0.03, s0 + 8) > -0.3 ? 1 : 0; // mostly tail to head, sometimes head to tail
+    const upT = n1(ts * 0.03, s0 + 8) > -0.62 ? 1 : 0; // tail to head, only now and then head to tail
     st.up += (upT - st.up) * Math.min(1, dts * 0.7);
-    const d = 0.12;
+    const d = 0.3; // seconds per spine segment; with the follower chain this makes about half a wavelength over the trunk
     let maxA = 0, crest = 4;
     for (let i = 0; i <= 9; i++) {
-      const aU = i * d, aD = (9 - i) * d;
+      const dl = (k) => Math.min(k, 6) * d; // the neck and head ride on the follower chain from the chest
+      const aU = dl(i), aD = dl(9) - dl(i);
       const L_ = st.up * st.hist.read(aU, 0) + (1 - st.up) * st.hist.read(aD, 0);
       const S_ = st.up * st.hist.read(aU, 1) + (1 - st.up) * st.hist.read(aD, 1);
       const W_ = st.up * st.hist.read(aU, 2) + (1 - st.up) * st.hist.read(aD, 2);
-      const gl = i === 0 ? 7 : i < 7 ? 6.2 : 7, gs = i === 0 ? 5 : i < 7 ? 4.2 : 6;
+      const gl = i === 0 ? 8 : i < 7 ? 6.2 : 6.5, gs = i === 0 ? 8 : i < 7 ? 11 : 8;
       T[T3(i, 1)] += v * gl * L_;
       T[T3(i, 0)] += v * gs * S_;
       T[T3(i, 2)] += v * 2.5 * W_;
@@ -381,7 +413,23 @@ Q.flesh = {
   armPrefs: { hang: 0.8, floatLow: 0.5 },
   regions: { flesh: 1, spine: 0.1 },
   tempo: () => 0.2,
-  mod(P, v) { P.mods.fleshGain += 1.1 * v; P.mods.fleshStiff *= 1 - 0.5 * v; P.mods.fleshDamp *= 1 - 0.35 * v; P.mods.gesture *= 1 - 0.25 * v; P.mods.zetaAdd += 0.08 * v; },
+  init(P) { P.q.flesh = { a: P.rng() * TAU, b: P.rng() * TAU, c: P.rng() * TAU }; },
+  gen(P, v) { // a soft bounce in the knees and a slow sway: the bones move gently, the flesh answers a beat later
+    const T = P.T, st = P.q.flesh, ts = P.ts, dts = P.dts, s0 = P.ns + 14000;
+    st.a += TAU * (1.25 + 0.2 * n2(ts * 0.05, s0)) * dts;
+    st.b += TAU * (0.22 + 0.06 * n2(ts * 0.04, s0 + 1)) * dts;
+    st.c += TAU * (0.16 + 0.04 * n2(ts * 0.05, s0 + 2)) * dts;
+    const bob = Math.sin(st.a), sway = Math.sin(st.b), turn = Math.sin(st.c);
+    T[PY] += v * 0.009 * bob - 0.008 * v; T[PX] += v * 0.02 * sway; T[PZ] += v * 0.012 * Math.sin(st.b * 0.5 + st.c);
+    T[T3(0, 1)] += v * 8 * sway; T[T3(0, 2)] += v * 9 * turn;
+    spreadSpine(T, 0, v * 1.5 * bob, v * -6 * sway, v * -7 * turn);
+    for (let s = 0; s < 2; s++) {
+      legAdd(T, s, L.KNEE, v * (5 + 7 * bob));
+      armAdd(T, s, A.UEL, v * 7 * Math.sin(st.b + s * Math.PI * 0.8)); armAdd(T, s, A.UAZ, v * 15 * Math.sin(st.c + s * Math.PI + 0.6));
+      armAdd(T, s, A.EF, v * 9 * (0.5 + 0.5 * Math.sin(st.a + s * 1.3)));
+    }
+  },
+  mod(P, v) { const M = P.mods; M.fleshGain += 1.1 * v; M.fleshStiff *= 1 - 0.5 * v; M.fleshDamp *= 1 - 0.35 * v; M.zetaAdd += 0.08 * v; calmMods(M, v, 0.8); },
   glow(P, v, push) { push('thigh_L', 0, -0.15, 0.03, 0.1, v * 0.6); push('thigh_R', 0, -0.15, 0.03, 0.1, v * 0.6); push('spine02', 0, 0.02, 0.1, 0.12, v * 0.6); push('upperarm_L', 0.1, -0.1, 0, 0.06, v * 0.4); push('upperarm_R', -0.1, -0.1, 0, 0.06, v * 0.4); },
 };
 
@@ -622,20 +670,27 @@ Q.thick = {
   mod(P, v) {
     const M = P.mods;
     M.slowScale *= 1 - 0.55 * v; M.fastScale *= 1 - 0.5 * v; M.stiff *= 1 - 0.42 * v; M.zetaAdd += 0.28 * v; M.loose *= 1 - 0.7 * v;
-    M.gesture *= 1 - 0.5 * v; M.gestureHands *= 1 - 0.45 * v; M.fleshGain -= 0.35 * v; M.fleshStiff *= 1 + 0.7 * v; M.trail *= 1 - 0.5 * v; M.holdDrift *= 1 - 0.4 * v;
+    M.fleshGain -= 0.35 * v; M.fleshStiff *= 1 + 0.7 * v; M.trail *= 1 - 0.5 * v; calmMods(M, v, 1);
   },
-  gen(P, v) { // working against resistance: slow strong pushes
-    const T = P.T, ts = P.ts, s0 = P.ns + 9000;
+  init(P) { P.q.thick = { a: P.rng() * TAU, b: P.rng() * TAU, c: P.rng() * TAU, d: P.rng() * TAU }; },
+  gen(P, v) { // working against resistance: slow strong pushes, the whole body leaning into the air and giving way again
+    v *= 0.72;
+    const T = P.T, st = P.q.thick, ts = P.ts, dts = P.dts, s0 = P.ns + 9000;
+    st.a += TAU * (0.42 + 0.1 * n2(ts * 0.05, s0 + 30)) * dts;
+    st.b += TAU * (0.31 + 0.08 * n2(ts * 0.04, s0 + 31)) * dts;
+    st.c += TAU * (0.25 + 0.06 * n2(ts * 0.05, s0 + 32)) * dts;
+    st.d += TAU * (0.36 + 0.08 * n2(ts * 0.045, s0 + 33)) * dts;
+    const push = Math.sin(st.a), lean = Math.sin(st.b), turn = Math.sin(st.c), dip = Math.sin(st.d);
     for (let s = 0; s < 2; s++) {
-      armAdd(T, s, A.UEL, v * 34 * n2(ts * 0.1, s0 + s * 7));
-      armAdd(T, s, A.UAZ, v * 38 * n2(ts * 0.09, s0 + s * 7 + 1));
-      armAdd(T, s, A.EF, v * 18 * n2(ts * 0.12, s0 + s * 7 + 2));
-      armAdd(T, s, A.FTW, v * 25 * n2(ts * 0.1, s0 + s * 7 + 3));
+      const ph = s * 2.6 + 0.4;
+      armAdd(T, s, A.UEL, v * (30 + 40 * Math.sin(st.a + ph))); armAdd(T, s, A.UAZ, v * 52 * Math.sin(st.b + ph));
+      armAdd(T, s, A.EF, v * 22 * Math.sin(st.c + ph + 1)); armAdd(T, s, A.FTW, v * 30 * Math.sin(st.d + ph));
+      legAdd(T, s, L.KNEE, v * 14 * Math.sin(st.d + s * Math.PI * 0.7));
     }
-    spreadSpine(T, 0, v * 6 * n2(ts * 0.08, s0 + 20), v * 10 * n2(ts * 0.07, s0 + 21), v * 16 * n2(ts * 0.06, s0 + 22));
-    T[T3(0, 2)] += v * 8 * n2(ts * 0.07, s0 + 23);
-    T[PX] += v * 0.025 * n2(ts * 0.06, s0 + 24);
-    T[PY] -= v * (0.025 + 0.015 * n2(ts * 0.08, s0 + 25));
+    spreadSpine(T, 0, v * 12 * lean, v * 16 * turn, v * 26 * Math.sin(st.a * 0.7 + 0.5));
+    T[T3(0, 2)] += v * 12 * turn; T[T3(0, 1)] += v * 8 * Math.sin(st.d + 1); T[T3(0, 0)] += v * 7 * lean;
+    T[PX] += v * 0.035 * Math.sin(st.b + 1); T[PZ] += v * 0.02 * push;
+    T[PY] -= v * (0.03 + 0.025 * (0.5 + 0.5 * dip));
   },
   post(P, v) {
     const T = P.T;
@@ -655,7 +710,31 @@ Q.time = {
   armPrefs: { floatLow: 0.8, floatSide: 0.6, hang: 0.5 },
   regions: { spine: 0.3, center: 0.2, arms: 0.2 },
   tempo: () => 0.08,
-  mod(P, v) { P.mods.slowScale *= 1 - 0.55 * v; P.mods.accentDecay *= 1 + 0.9 * v; P.mods.holdMul *= 1 + 0.5 * v; },
+  init(P) { P.q.time = { a: P.rng() * TAU, b: P.rng() * TAU, c: P.rng() * TAU, d: P.rng() * TAU }; },
+  mod(P, v) {
+    const M = P.mods;
+    M.slowScale *= 1 - 0.55 * v; M.accentDecay *= 1 + 0.9 * v;
+    calmMods(M, v, 1);
+  },
+  // there is plenty of time: the arms and the spine sweep through a large range and arrive without hurry
+  gen(P, v) {
+    v *= 0.8;
+    const T = P.T, st = P.q.time, dts = P.dts, ts = P.ts, s0 = P.ns + 15000;
+    st.a += TAU * (0.4 + 0.08 * n2(ts * 0.05, s0)) * dts;
+    st.b += TAU * (0.32 + 0.07 * n2(ts * 0.04, s0 + 1)) * dts;
+    st.c += TAU * (0.26 + 0.06 * n2(ts * 0.05, s0 + 2)) * dts;
+    st.d += TAU * (0.22 + 0.05 * n2(ts * 0.045, s0 + 3)) * dts;
+    for (let s = 0; s < 2; s++) {
+      const ph = s * 2.4;
+      armAdd(T, s, A.UEL, v * (22 + 30 * Math.sin(st.a + ph))); armAdd(T, s, A.UAZ, v * 40 * Math.sin(st.b + ph + 0.7));
+      armAdd(T, s, A.EF, v * (14 + 16 * Math.sin(st.c + ph))); armAdd(T, s, A.UTW, v * 22 * Math.sin(st.d + ph)); armAdd(T, s, A.FTW, v * 26 * Math.sin(st.b + ph + 2));
+      armAdd(T, s, A.WF, v * 16 * Math.sin(st.a + ph + 1.2));
+    }
+    spreadSpine(T, 0, v * 10 * Math.sin(st.c + 0.5), v * 16 * Math.sin(st.d), v * 20 * Math.sin(st.b + 1.1));
+    T[T3(0, 2)] += v * 10 * Math.sin(st.b + 0.4); T[T3(0, 1)] += v * 7 * Math.sin(st.d + 1.4);
+    T[T3(9, 0)] += v * 6 * Math.sin(st.a); T[T3(8, 2)] += v * 10 * Math.sin(st.b + 1.9);
+    T[PX] += v * 0.025 * Math.sin(st.c); T[PY] -= v * (0.012 + 0.012 * Math.sin(st.a));
+  },
   glow(P, v, push) { push('spine05', 0, 0, 0.08, 0.12, v * 0.4 * (0.6 + 0.4 * P.breath)); },
 };
 
@@ -912,10 +991,13 @@ Q.tashi = {
   armPrefs: { hang: 1, curveLow: 0.6 },
   regions: { feet: 1, legs: 0.9, pelvis: 0.6, spine: 0.3, center: 0.3 },
   tempo: () => 0.35,
-  mod(P, v) { P.mods.peelAllowed *= 1 - 0.95 * v; P.mods.liftAllowed *= 1 - v; P.mods.stepAllowed *= 1 - v; },
+  mod(P, v) { P.mods.peelAllowed *= 1 - 0.95 * v; P.mods.liftAllowed *= 1 - v; P.mods.stepAllowed *= 1 - v; calmMods(P.mods, v, 0.8); },
   gen(P, v) {
     const T = P.T, ts = P.ts, s0 = P.ns + 11000;
-    for (let s = 0; s < 2; s++) legAdd(T, s, L.KNEE, v * 16 * n2(ts * 0.3, s0 + s));
+    // the feet stay planted and the weight rolls through them: ankles rolling in and out, toes lifting, knees and pelvis answering
+    for (let s = 0; s < 2; s++) { legAdd(T, s, L.INV, v * (5 + 8 * n2(ts * 0.9, s0 + 20 + s))); legAdd(T, s, L.TOE, v * 26 * n2(ts * 0.95, s0 + 22 + s)); }
+    T[WS] += v * 0.7 * n2(ts * 0.5, s0 + 24);
+    for (let s = 0; s < 2; s++) legAdd(T, s, L.KNEE, v * 26 * n2(ts * 0.8, s0 + s));
     T[PX] += v * 0.04 * n2((ts - 0.12) * 0.3, s0 + 5); T[PZ] += v * 0.035 * n2((ts - 0.12) * 0.3, s0 + 6);
     T[PY] -= v * (0.028 + 0.02 * (0.5 + 0.5 * n2((ts - 0.1) * 0.3, s0 + 7)));
     T[T3(0, 1)] += v * 7 * n2((ts - 0.25) * 0.3, s0 + 8); T[T3(0, 0)] += v * 6 * n2((ts - 0.25) * 0.3, s0 + 9); T[T3(0, 2)] += v * 8 * n2((ts - 0.25) * 0.3, s0 + 10);
@@ -1029,9 +1111,14 @@ Q.dolfi = {
   regions: { legs: 0.5, feet: 0.5, center: 0.4, arms: 0.2, hands: 0.2 },
   tempo: () => 0.3,
   init(P) { P.q.dolfi = { next: 1 + P.rng(), tw: [{ on: false }, { on: false }] }; },
-  mod(P, v) { P.mods.gesture *= 1 - 0.35 * v; P.mods.drift *= 1 - 0.3 * v; P.mods.genGain *= 1 - 0.35 * v; },
+  mod(P, v) { calmMods(P.mods, v, 0.8); P.mods.genGain *= 1 - 0.35 * v; },
   gen(P, v) {
     const st = P.q.dolfi, T = P.T, Ac = P.ACC, rng = P.rng;
+    // a slow undulation that starts in the pelvis and rolls up through the spine
+    st.ph = (st.ph || P.rng() * TAU) + TAU * (0.38 + 0.07 * n2(P.ts * 0.05, P.ns + 16000)) * P.dts;
+    T[T3(0, 0)] += v * 18 * Math.sin(st.ph); T[T3(0, 1)] += v * 10 * Math.sin(st.ph * 0.5 + 1); spreadSpine(T, 0, v * 9 * Math.sin(st.ph - 0.5), v * -8 * Math.sin(st.ph * 0.5 + 1), 0);
+    T[PY] += v * 0.02 * Math.sin(st.ph * 2 + 0.6); T[PZ] += v * 0.03 * Math.sin(st.ph + 0.3);
+    for (let s = 0; s < 2; s++) { armAdd(T, s, A.UEL, v * 26 * Math.sin(st.ph - 0.9 + s * 0.8)); armAdd(T, s, A.UAZ, v * 26 * Math.sin(st.ph * 0.5 + s * 2)); armAdd(T, s, A.EF, v * 14 * Math.sin(st.ph + s)); legAdd(T, s, L.KNEE, v * 10 * Math.sin(st.ph + s * Math.PI)); }
     T[PY] -= 0.035 * v; legAdd(T, 0, L.KNEE, 4 * v); legAdd(T, 1, L.KNEE, 4 * v);
     st.next -= P.dt;
     if (st.next <= 0) {
@@ -1042,8 +1129,8 @@ Q.dolfi = {
     for (const e of st.tw) {
       if (!e.on) continue;
       e.t += P.dt;
-      if (e.t > 0.5) { e.on = false; continue; }
-      const k = burst(e.t, 0.07, 0.28) * e.amp * v;
+      if (e.t > 0.9) { e.on = false; continue; }
+      const k = burst(e.t, 0.16, 0.42) * e.amp * v; // soft twitches: they rise over 0.16 s
       Ac[e.ch] += k * (e.ch === PX ? 0.02 : e.ch === T3(0, 2) ? 5 : 12);
     }
   },
