@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #e9e8e5; overflow: hidden; font: 12px/1.35 ui-monospace, Menlo, monospace; color: #222; }
+  canvas { display: block; position: absolute; inset: 0; }
+  #hud { position: absolute; left: 0; top: 0; pointer-events: none; }
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="hud"></canvas>
+<script type="module">
+// Motion engine harness (builder C).
+// Params: layers=float:0.6,shake:0.4  t=20 (pre-simulate seconds)  view=front|side|back|three  seed=7
+//         sheet=4x3&step=0.5 (contact sheet)  duo=1 (second performer, other seed)  fig=cap (capsule placeholder)
+//         seq=shake:0.7@5,shake:0@15,!explosive@8 (timed layer changes and accents, sim seconds)
+//         thread=0.3,1.4,0.5&thand=R&tstr=0.8&tmove=1&toff=8  overlay=1 (glow points, foot contacts)  speed=1 (live mode)
+//         focus=hand_L&zoom=0.3 (camera aims at a bone)  selftest=1 (determinism, dt edge cases, NaN, cost)
+import * as THREE from 'three';
+import { createEngine } from '../src/motion/engine.js';
+import { buildSkeleton, BONES, BONE_INDEX } from '../src/skeleton.js';
+import { VOCAB } from '../src/vocab.js';
+
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) ? parseFloat(P.get(k)) : d);
+const layersArg = (P.get('layers') || '').split(',').filter(Boolean).map(s => { const [id, v] = s.split(':'); return [id, v === undefined ? 0.7 : parseFloat(v)]; });
+const T0 = num('t', 6), SEED = num('seed', 7), VIEW = P.get('view') || 'front', DUO = P.get('duo') === '1';
+const SHEET = P.get('sheet'), STEP = num('step', 0.5), OVERLAY = P.get('overlay') === '1';
+const SEQ = (P.get('seq') || '').split(',').filter(Boolean).map(s => {
+  const [a, t] = s.split('@'); const time = parseFloat(t);
+  if (a.startsWith('!')) return { time, accent: a.slice(1) };
+  const [id, v] = a.split(':'); return { time, id, v: parseFloat(v) };
+}).sort((a, b) => a.time - b.time);
+const THREAD = P.get('thread') ? P.get('thread').split(',').map(Number) : null;
+
+const canvas = document.getElementById('gl'), hud = document.getElementById('hud');
+const W = innerWidth, H = innerHeight;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H, false);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+hud.width = W; hud.height = H; hud.style.width = W + 'px'; hud.style.height = H + 'px';
+const ctx2 = hud.getContext('2d');
+
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe9e8e5);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9a9a96, 1.4));
+const key = new THREE.DirectionalLight(0xffffff, 2.4); key.position.set(2.5, 5, 3.5); key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048); key.shadow.camera.left = -2.5; key.shadow.camera.right = 2.5; key.shadow.camera.top = 3; key.shadow.camera.bottom = -1; key.shadow.bias = -0.0005;
+scene.add(key);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 14), new THREE.MeshStandardMaterial({ color: 0xcfcdc8, roughness: 0.95 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+// floor grid lines every 10 cm near the feet, to judge sliding
+const grid = new THREE.GridHelper(2, 20, 0xaaa9a4, 0xbebdb8); grid.position.y = 0.001; scene.add(grid);
+
+// ---------------------------------------------------------------- figures
+function capsuleFigure(color) {
+  const sk = buildSkeleton(THREE);
+  const group = new THREE.Group(); group.add(sk.root);
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6 });
+  const Y = new THREE.Vector3(0, 1, 0);
+  const add = (bone, geo, pos, quat, scale) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.position.copy(pos); if (quat) m.quaternion.copy(quat); if (scale) m.scale.copy(scale); bone.add(m); return m; };
+  const sph = new THREE.SphereGeometry(1, 20, 14);
+  for (const b of BONES) {
+    const bone = sk.byName[b.name]; if (b.name === 'root') continue;
+    const d = new THREE.Vector3(...b.dir), Lb = b.length, mid = d.clone().multiplyScalar(Lb / 2), q = new THREE.Quaternion().setFromUnitVectors(Y, d);
+    const n = b.name;
+    if (n === 'pelvis') { add(bone, sph, new THREE.Vector3(0, -0.035, 0.015), null, new THREE.Vector3(0.165, 0.11, 0.12)); continue; }
+    if (n.startsWith('spine')) {
+      const i = +n.slice(-1), wx = [0.135, 0.13, 0.13, 0.14, 0.15, 0.15][i - 1], wz = [0.105, 0.1, 0.1, 0.105, 0.115, 0.11][i - 1];
+      add(bone, sph, new THREE.Vector3(0, Lb * 0.5, 0.045), null, new THREE.Vector3(wx, Lb * 0.75, wz)); continue;
+    }
+    if (n === 'head') {
+      add(bone, sph, new THREE.Vector3(0, 0.075, 0.02), null, new THREE.Vector3(0.082, 0.108, 0.098));
+      add(bone, sph, new THREE.Vector3(0, 0.06, 0.105), null, new THREE.Vector3(0.018, 0.022, 0.02)); // nose marker (harness only)
+      continue;
+    }
+    let r = 0.02;
+    if (n.startsWith('neck')) r = 0.048; else if (n.startsWith('clavicle')) r = 0.032; else if (n.startsWith('upperarm')) r = 0.045; else if (n.startsWith('forearm')) r = 0.035;
+    else if (n.startsWith('hand')) r = 0.026; else if (n.startsWith('thumb')) r = 0.0105; else if (/^(index|middle|ring|pinky)/.test(n)) r = 0.0085;
+    else if (n.startsWith('thigh')) r = 0.072; else if (n.startsWith('shin')) r = 0.048; else if (n.startsWith('foot')) r = 0.034; else if (n.startsWith('toes')) r = 0.024;
+    const geo = new THREE.CapsuleGeometry(r, Math.max(0.001, Lb - (n.startsWith('hand') ? 0 : r * 0.6)), 4, 10);
+    const m = add(bone, geo, mid, q);
+    if (n.startsWith('hand')) m.scale.set(1.5, 1, 0.6);
+    if (n.startsWith('foot')) m.scale.set(1.25, 1, 0.75);
+  }
+  return { object3d: group, bones: sk.bones, byName: sk.byName, setFlesh() {}, setGlow() {}, update() { group.updateMatrixWorld(true); }, setHeadVisible() {} };
+}
+
+async function makeFigure(i) {
+  if (P.get('fig') !== 'cap') {
+    try {
+      const { createFigure } = await import('../src/figure.js');
+      const f = await createFigure(THREE, { material: i === 0 ? 'charcoal' : 'graphite', role: i === 0 ? 'soloist' : 'participant' });
+      return f;
+    } catch (e) { console.warn('figure.js unavailable, using capsules:', e.message); }
+  }
+  return capsuleFigure(i === 0 ? 0x2b2b2d : 0x55555a);
+}
+
+const figs = [await makeFigure(0)];
+if (DUO) figs.push(await makeFigure(1));
+figs.forEach((f, i) => { f.object3d.position.x = DUO ? (i === 0 ? -0.7 : 0.7) : 0; scene.add(f.object3d); });
+
+const engine = createEngine(THREE, { vocab: VOCAB });
+const ids = figs.map((f, i) => engine.addPerformer(f, { seed: i === 0 ? SEED : SEED * 3 + 11, role: i === 0 ? 'soloist' : 'participant', variation: i === 0 ? 0.5 : 0.75 }));
+for (const [id, v] of layersArg) engine.setLayer(id, v);
+
+// overlay markers
+const markers = [];
+if (OVERLAY) {
+  const gm = new THREE.SphereGeometry(1, 12, 8);
+  for (let i = 0; i < figs.length * 8; i++) { const m = new THREE.Mesh(gm, new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.75, depthTest: false })); m.renderOrder = 10; scene.add(m); markers.push(m); }
+}
+const contact = [];
+for (let i = 0; i < figs.length * 2; i++) { const m = new THREE.Mesh(new THREE.CircleGeometry(0.018, 16), new THREE.MeshBasicMaterial({ color: 0x3a8a4a })); m.rotation.x = -Math.PI / 2; m.position.y = 0.002; scene.add(m); contact.push(m); }
+
+// ---------------------------------------------------------------- simulation + diagnostics
+let simT = 0, seqI = 0;
+const DT = 1 / 60;
+const diag = { slide: 0, slideAt: '', floor: 1, floorAt: '', handFloor: 1, collide: 0, steps: 0, frames: 0, nan: 0 };
+const prevPlant = figs.map(() => [null, null]);
+const tmpV = new THREE.Vector3();
+function step(dt) {
+  while (seqI < SEQ.length && SEQ[seqI].time <= simT) { const s = SEQ[seqI++]; if (s.accent) engine.accent(s.accent); else engine.setLayer(s.id, s.v); }
+  if (THREAD) {
+    const [x, y, z] = THREAD;
+    const on = !P.has('toff') || simT < num('toff', 1e9);
+    if (on) {
+      const mv = P.get('tmove') === '1';
+      const tgt = new THREE.Vector3(x + (mv ? 0.35 * Math.sin(simT * 0.7) : 0), y + (mv ? 0.3 * Math.sin(simT * 0.53) : 0), z);
+      engine.setThread(ids[0], { target: tgt, hand: P.get('thand') || 'R', strength: num('tstr', 0.85) });
+    } else engine.setThread(ids[0], { target: null });
+  }
+  engine.update(dt, simT); simT += dt; diag.frames++;
+  figs.forEach((f, i) => {
+    f.setFlesh(engine.getFleshParams(ids[i]));
+    f.update(dt);
+    const d = engine.debug(ids[i]);
+    for (let s = 0; s < 2; s++) {
+      const ft = d.feet[s], planted = !d.airborne[s] && ft.lift < 0.004 && !(d.stepping);
+      const b = d.ballW[s];
+      if (!isFinite(b.x) || !isFinite(b.y)) diag.nan++;
+      if (planted) {
+        const pp = prevPlant[i][s];
+        if (pp && pp.bx === ft.bx && pp.bz === ft.bz) {
+          const sl = Math.hypot(b.x - pp.x, b.z - pp.z);
+          if (sl > diag.slide) { diag.slide = sl; diag.slideAt = `p${i} ${s ? 'R' : 'L'} t=${simT.toFixed(2)}`; }
+        } else prevPlant[i][s] = { bx: ft.bx, bz: ft.bz, x: b.x, z: b.z };
+      } else prevPlant[i][s] = null;
+      const hy = Math.min(d.heelW[s].y, b.y);
+      if (hy < diag.floor) { diag.floor = hy; diag.floorAt = `p${i} t=${simT.toFixed(2)}`; }
+    }
+    for (const hn of ['middle03_L', 'middle03_R']) { f.byName[hn].getWorldPosition(tmpV); if (tmpV.y < diag.handFloor) diag.handFloor = tmpV.y; }
+    diag.collide = Math.max(diag.collide, d.collide[0], d.collide[1]);
+  });
+}
+function simulateTo(t) { let guard = 0; while (simT < t - 1e-9 && guard++ < 100000) step(Math.min(DT, t - simT)); }
+
+function updateOverlay() {
+  figs.forEach((f, i) => {
+    f.object3d.updateMatrixWorld(true);
+    const d = engine.debug(ids[i]);
+    for (let s = 0; s < 2; s++) {
+      const m = contact[i * 2 + s];
+      tmpV.set(d.feet[s].bx, 0, d.feet[s].bz); f.object3d.localToWorld(tmpV); m.position.set(tmpV.x, 0.002, tmpV.z);
+      m.material.color.set(d.airborne[s] ? 0xc04040 : d.feet[s].peel > 3 ? 0xd0a030 : 0x3a8a4a);
+    }
+    if (!OVERLAY) return;
+    const g = engine.getGlowPoints(ids[i]);
+    for (let k = 0; k < 8; k++) {
+      const m = markers[i * 8 + k], p = g[k];
+      if (!p) { m.visible = false; continue; }
+      m.visible = true; tmpV.set(...p.offset); f.byName[p.bone].localToWorld(tmpV); m.position.copy(tmpV); m.scale.setScalar(Math.max(0.012, p.radius * 0.35)); m.material.opacity = 0.3 + 0.6 * p.intensity;
+    }
+  });
+}
+
+// ---------------------------------------------------------------- cameras
+const cam = new THREE.PerspectiveCamera(DUO ? 30 : 26, 1, 0.05, 50);
+function placeCam(aspect) {
+  const dist = (DUO ? 5.6 : num('zoom', 1) * 4.5) * Math.max(1, (DUO ? 1.25 : 0.95) / aspect);
+  const tgt = new THREE.Vector3(0, num('ty', 1.0), 0);
+  if (P.get('focus')) { const b = figs[0].byName[P.get('focus')]; if (b) { figs[0].object3d.updateMatrixWorld(true); b.getWorldPosition(tgt); } }
+  const dir = { front: [0, 0.12, 1], side: [1, 0.12, 0], back: [0, 0.12, -1], three: [0.72, 0.22, 0.7], top: [0.3, 1.2, 0.5] }[VIEW] || [0, 0.12, 1];
+  cam.position.set(...dir).normalize().multiplyScalar(dist).add(tgt);
+  cam.aspect = aspect; cam.updateProjectionMatrix(); cam.lookAt(tgt);
+}
+
+function header() {
+  const ls = engine.getLayers().map(l => `${l.id}:${l.target.toFixed(2)}`).join(' ') || '(no layers)';
+  const d = engine.debug(ids[0]);
+  return `${ls} | seed ${SEED}${DUO ? ' duo' : ''} | view ${VIEW} | shape ${d.shape} bias ${d.bias} | sleepwalker drops ${d.zombieHits}`;
+}
+function diagLine() {
+  return `slide max ${(diag.slide * 1000).toFixed(1)} mm (${diag.slideAt}) | foot min y ${(diag.floor * 1000).toFixed(1)} mm | fingertip min y ${(diag.handFloor * 1000).toFixed(0)} mm | arm push max ${(diag.collide * 1000).toFixed(0)} mm | nan ${diag.nan}`;
+}
+
+// ---------------------------------------------------------------- self-test (?selftest=1): determinism, dt edge cases, NaN, cost
+if (P.get('selftest') === '1') {
+  const mk = () => { const sk = buildSkeleton(THREE); const g = new THREE.Group(); g.add(sk.root); return { object3d: g, bones: sk.bones, byName: sk.byName }; };
+  const run = (dts) => {
+    const e = createEngine(THREE, { vocab: VOCAB });
+    e.addPerformer(mk(), { seed: 7 }); e.addPerformer(mk(), { seed: 19, role: 'participant', variation: 0.75 });
+    e.setLayer('float', 0.6); e.setLayer('not-a-word', 1); e.setLayer('shake', 0.5);
+    let i = 0; for (const dt of dts) { if (i === 200) { e.setLayer('lena', 0.7); e.accent('explosive'); } if (i === 400) e.setLayer('shake', 0); e.update(dt, 0); i++; }
+    return e;
+  };
+  const seq = []; for (let i = 0; i < 900; i++) seq.push(i % 97 === 0 ? 0 : (i % 13 === 0 ? 1 / 30 : 1 / 60));
+  const sig = (e) => e.getLayers().map(x => x.id + x.value.toFixed(5)).join(',') + JSON.stringify(e.getActivity(1)) + JSON.stringify(e.getFleshParams(2));
+  const eA = run(seq), deterministic = sig(eA) === sig(run(seq));
+  const layersFinite = eA.getLayers().every(l => Number.isFinite(l.value));
+  const e3 = createEngine(THREE, { vocab: VOCAB }), f3 = mk(), id3 = e3.addPerformer(f3, { seed: 3 });
+  for (const v of VOCAB) if (v.kind !== 'accent') e3.setLayer(v.id, 0.8);
+  e3.setThread(id3, { target: new THREE.Vector3(0.3, 1.5, 0.4), hand: 'both', strength: 1 });
+  let nan = 0;
+  for (let i = 0; i < 3000; i++) { e3.update(i % 5 === 0 ? 0 : i % 7 === 0 ? 1e-5 : i % 11 === 0 ? 1 / 20 : 1 / 240, 0); for (const b of f3.bones) if (!isFinite(b.quaternion.x + b.quaternion.w + b.position.y)) nan++; }
+  e3.accent('countdown'); for (let i = 0; i < 900; i++) e3.update(1 / 60, 0);
+  for (const b of f3.bones) if (!isFinite(b.quaternion.x + b.quaternion.w + b.position.y)) nan++;
+  const e4 = run([]); for (const id of ['lunas', 'snake', 'flesh']) e4.setLayer(id, 0.6);
+  for (let i = 0; i < 120; i++) e4.update(1 / 60, 0);
+  const t0 = performance.now(); for (let i = 0; i < 1200; i++) e4.update(1 / 60, 0);
+  const ms = (performance.now() - t0) / 1200;
+  const res = `selftest: deterministic ${deterministic} | layer values finite ${layersFinite} | nan ${nan} | ${ms.toFixed(3)} ms per update (2 performers, 5 layers)`;
+  console.log(res); ctx2.font = '14px ui-monospace, Menlo, monospace'; ctx2.fillStyle = '#222'; ctx2.fillText(res, 12, 40);
+  window.__selftest = { deterministic, layersFinite, nan, ms };
+  throw new Error('selftest done'); // stop here (reported above)
+}
+
+// ---------------------------------------------------------------- render
+if (SHEET) {
+  const [cols, rows] = SHEET.split('x').map(Number);
+  const top = 22, bottom = 18, cw = Math.floor(W / cols), ch = Math.floor((H - top - bottom) / rows);
+  simulateTo(T0);
+  renderer.setScissorTest(true);
+  renderer.setClearColor(0xe9e8e5);
+  renderer.setViewport(0, 0, W, H); renderer.setScissor(0, 0, W, H); renderer.clear();
+  ctx2.clearRect(0, 0, W, H);
+  ctx2.font = '11px ui-monospace, Menlo, monospace';
+  const labels = [];
+  for (let k = 0; k < cols * rows; k++) {
+    if (k > 0) simulateTo(T0 + k * STEP);
+    updateOverlay();
+    const c = k % cols, r = Math.floor(k / cols);
+    const x = c * cw, yTop = top + r * ch, y = H - yTop - ch;
+    renderer.setViewport(x, y, cw, ch); renderer.setScissor(x, y, cw, ch);
+    placeCam(cw / ch);
+    renderer.render(scene, cam);
+    { const d = engine.debug(ids[0]); labels.push([x, yTop, `${simT.toFixed(2)}s ${d.shape} | L ${d.arms[0]} R ${d.arms[1]}`]); }
+  }
+  ctx2.fillStyle = '#e9e8e5'; ctx2.fillRect(0, 0, W, top); ctx2.fillRect(0, H - bottom, W, bottom);
+  ctx2.fillStyle = '#222'; ctx2.fillText(header(), 6, 15); ctx2.fillText(diagLine(), 6, H - 5);
+  ctx2.strokeStyle = 'rgba(0,0,0,0.12)';
+  for (const [x, y, s] of labels) { ctx2.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1); ctx2.fillStyle = '#444'; ctx2.fillText(s, x + 5, y + 13); }
+  console.log(header()); console.log(diagLine());
+  window.__done = true;
+} else {
+  simulateTo(T0);
+  let last = performance.now();
+  const speed = num('speed', 1);
+  function frame(now) {
+    const dt = Math.min(Math.max((now - last) / 1000, 0), 1 / 20) * speed; last = now;
+    step(dt); updateOverlay();
+    renderer.setViewport(0, 0, W, H); placeCam(W / H); renderer.render(scene, cam);
+    ctx2.clearRect(0, 0, W, H); ctx2.font = '12px ui-monospace, Menlo, monospace'; ctx2.fillStyle = '#222';
+    ctx2.fillText(header() + ` | t ${simT.toFixed(1)}`, 8, 16); ctx2.fillText(diagLine(), 8, H - 8);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  window.__engine = engine; window.__ids = ids;
+}
+</script>
+</body>
+</html>

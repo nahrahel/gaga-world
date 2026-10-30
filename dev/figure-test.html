@@ -1,0 +1,182 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Figure test</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html,body{margin:0;background:#d9d9d9;overflow:hidden}canvas{display:block}#info{position:fixed;left:10px;top:8px;font:12px/1.4 system-ui,sans-serif;color:#444;white-space:pre}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head><body><div id="info"></div>
+<script type="module">
+// Figure test bench. URL params:
+//   view=front|side|back|q|hand|handr|pelvis|feet|head|shoulder|armpit   pose=rest|test1|test2|test3|test4|dance
+//   mat=charcoal|plaster|graphite   az/el (deg, orbit offset)   dist (multiplier)   wire=1   wbone=<bone> (weight view)
+//   attr=flesh|cavity   glow=1 (sensation map demo)   head=0 (first-person head hide)   gain=<flesh gain>
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { jointQuat, BONE_INDEX } from '../src/skeleton.js';
+import { createFigure } from '../src/figure.js';
+
+const Q = new URLSearchParams(location.search);
+const view = Q.get('view') || 'front', pose = Q.get('pose') || 'rest';
+const info = document.getElementById('info');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd6d6d6);
+const pm = new THREE.PMREMGenerator(renderer);
+scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.45;
+
+// neutral light grey room
+const roomMat = new THREE.MeshStandardMaterial({ color: 0xc9c9c9, roughness: 0.95 });
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 14), new THREE.MeshStandardMaterial({ color: 0xbdbdbd, roughness: 0.85 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+const wallB = new THREE.Mesh(new THREE.PlaneGeometry(14, 6), roomMat); wallB.position.set(0, 3, -4); wallB.receiveShadow = true; scene.add(wallB);
+const wallF = new THREE.Mesh(new THREE.PlaneGeometry(14, 6), roomMat); wallF.position.set(0, 3, 6); wallF.rotation.y = Math.PI; scene.add(wallF);
+const wallR = new THREE.Mesh(new THREE.PlaneGeometry(14, 6), roomMat); wallR.position.set(-5, 3, 0); wallR.rotation.y = Math.PI / 2; wallR.receiveShadow = true; scene.add(wallR);
+
+// key light from a high side window, plus fill
+const key = new THREE.DirectionalLight(0xfff4e6, 3.2);
+key.position.set(3.2, 4.6, 2.6); key.castShadow = true;
+key.shadow.mapSize.set(4096, 4096); key.shadow.camera.left = -1.6; key.shadow.camera.right = 1.6; key.shadow.camera.top = 2.2; key.shadow.camera.bottom = -0.6;
+key.shadow.camera.near = 0.5; key.shadow.camera.far = 12; key.shadow.bias = -0.0002; key.shadow.normalBias = 0.012; key.shadow.radius = 4;
+if (Q.get('key')) key.position.fromArray(Q.get('key').split(',').map(Number));
+scene.add(key, key.target);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xa8a8a8, 0.9));
+const fill = new THREE.DirectionalLight(0xe8eef8, 0.6); fill.position.set(-3, 2, 3); scene.add(fill);
+
+const fig = await createFigure(THREE, { material: Q.get('mat') || 'charcoal' });
+scene.add(fig.object3d);
+if (Q.get('head') === '0') fig.setHeadVisible(false);
+if (Q.get('gain')) fig.setFlesh({ gain: +Q.get('gain') });
+if (Q.get('glow')) fig.setGlow([
+  { bone: 'pelvis', offset: [0, 0.04, 0.03], radius: 0.09, intensity: 1 },
+  { bone: 'hand_L', offset: [0.05, -0.06, -0.015], radius: 0.035, intensity: 0.9 },
+  { bone: 'spine04', offset: [0, 0, -0.05], radius: 0.08, intensity: 0.6 },
+]);
+
+// debug attribute views
+const geo = fig.mesh.geometry;
+function debugColors(fn) {
+  const n = geo.attributes.position.count, col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { const v = fn(i); col[3 * i] = 0.15 + 0.85 * v; col[3 * i + 1] = 0.15 + 0.4 * v * (1 - v) * 4 * 0.5; col[3 * i + 2] = 0.15 + 0.85 * (1 - v); }
+  const g2 = geo.clone(); g2.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  fig.mesh.geometry = g2; fig.mesh.material = new THREE.MeshLambertMaterial({ vertexColors: true });
+}
+if (Q.get('wbone')) {
+  const bi = fig.skeleton.bones.findIndex(b => b.name === Q.get('wbone')), si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight;
+  debugColors(i => { let w = 0; for (let k = 0; k < 4; k++) if (si.getComponent(i, k) === bi) w += sw.getComponent(i, k); return w; });
+}
+if (Q.get('attr')) { const a = geo.attributes[Q.get('attr')]; debugColors(i => a.getX(i)); }
+if (Q.get('wire')) for (const m of [].concat(fig.mesh.material)) m.wireframe = true;
+
+// ---------------- poses
+const B = fig.byName;
+const q = (name, f = 0, a = 0, t = 0) => jointQuat(THREE, name, f, a, t, B[name].quaternion);
+const FINGERS = ['index', 'middle', 'ring', 'pinky'];
+function resetPose() { for (const b of fig.bones) b.quaternion.identity(); B.root.position.set(0, 0, 0); B.pelvis.position.set(0, 0.96, 0); }
+function applyPose(name, t = 0) {
+  resetPose();
+  if (name === 'test1') {
+    for (const s of ['_L', '_R']) { q('forearm' + s, 120); q('hand' + s, 50); }
+    for (const f of FINGERS) for (const k of ['01', '02', '03']) q(f + k + '_L', 70);
+    q('thumb01_L', 20, 10); q('thumb02_L', 45); q('thumb03_L', 50);
+    for (const f of FINGERS) { q(f + '01_R', 10, f === 'middle' ? 0 : 15); q(f + '02_R', 10); q(f + '03_R', 10); }
+    q('thumb01_R', 0, 30);
+  } else if (name === 'test2') {
+    for (const s of ['_L', '_R']) { q('thigh' + s, 70, 25, 30); q('shin' + s, 100); q('foot' + s, 20); }
+    for (let i = 1; i <= 6; i++) q('spine0' + i, 5);
+    q('head', 15);
+  } else if (name === 'test3') {
+    for (const s of ['_L', '_R']) q('upperarm' + s, 0, 120, 40);
+    for (let i = 1; i <= 6; i++) q('spine0' + i, 0, 5, 5);
+    q('thigh_L', 90);
+  } else if (name === 'test4') { // twist and reach stress test
+    q('upperarm_L', 80, 20, -30); q('forearm_L', 30, 0, 80); q('hand_L', -40, 20);
+    q('upperarm_R', -40, 30, 20); q('forearm_R', 90, 0, -80); q('hand_R', 60, -15);
+    q('clavicle_L', 15, 20); q('spine03', 10, 0, 7); q('spine04', 8, 0, 7); q('neck01', -20, 10, 20); q('head', -20, 0, 20);
+    q('thigh_R', 30, 40, 45); q('shin_R', 60); q('foot_R', -45); q('toes_R', 30);
+  } else if (name === 'dance') {
+    const w = Math.sin(t * 6.0);
+    B.pelvis.position.y = 0.96 + 0.03 * w;
+    q('spine03', 10 * w); q('upperarm_L', 20, 40 + 30 * w); q('upperarm_R', 20, 40 - 30 * w);
+  }
+  fig.object3d.updateMatrixWorld(true);
+  if (name === 'test2' || name === 'test3' || name === 'test4') plantFeet();
+}
+function plantFeet() {
+  // lower the root so the lowest sole point touches the floor
+  const pts = [];
+  for (const s of ['_L', '_R']) {
+    const x = s === '_L' ? 1 : -1;
+    for (const [bone, p] of [['foot' + s, [0.105 * x, 0.0, -0.055]], ['foot' + s, [0.112 * x, 0.0, 0.12]], ['toes' + s, [0.09 * x, 0.004, 0.19]]]) {
+      const b = B[bone], rest = new THREE.Vector3(...p);
+      const head = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld);
+      // bone-local offset = rest point minus rest bone head (identity rest rotations)
+      const restHead = BONE_HEADS[bone];
+      pts.push(rest.sub(restHead).applyQuaternion(b.getWorldQuaternion(new THREE.Quaternion())).add(head).y);
+    }
+  }
+  B.root.position.y = -Math.min(...pts);
+  fig.object3d.updateMatrixWorld(true);
+}
+const BONE_HEADS = {};
+{ const tmp = new THREE.Vector3(); resetPose(); fig.object3d.updateMatrixWorld(true); for (const b of fig.bones) BONE_HEADS[b.name] = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld); }
+applyPose(pose, 0);
+
+// ---------------- camera
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.02, 60);
+const wp = n => new THREE.Vector3().setFromMatrixPosition(B[n].matrixWorld);
+const V = {
+  front: { t: new THREE.Vector3(0, 0.88, 0), d: new THREE.Vector3(0, 0.02, 1), r: 4.3 },
+  q: { t: new THREE.Vector3(0, 0.88, 0), d: new THREE.Vector3(0.6, 0.05, 1), r: 4.3 },
+  side: { t: new THREE.Vector3(0, 0.88, 0), d: new THREE.Vector3(1, 0.02, 0), r: 4.3 },
+  back: { t: new THREE.Vector3(0, 0.88, 0), d: new THREE.Vector3(-0.1, 0.02, -1), r: 4.3 },
+  hand: { t: wp('middle02_L').lerp(wp('hand_L'), 0.45), d: new THREE.Vector3(0.75, 0.2, 1), r: 0.55 },
+  handr: { t: wp('middle02_R').lerp(wp('hand_R'), 0.45), d: new THREE.Vector3(-0.75, 0.2, 1), r: 0.55 },
+  palm: { t: wp('middle02_L').lerp(wp('hand_L'), 0.45), d: new THREE.Vector3(-0.55, -0.45, 0.55), r: 0.55 },
+  pelvis: { t: wp('pelvis').add(new THREE.Vector3(0, -0.04, 0)), d: new THREE.Vector3(0.5, 0.1, 1), r: 1.25 },
+  feet: { t: new THREE.Vector3(0.1, 0.06, 0.05), d: new THREE.Vector3(0.55, 0.45, 1), r: 0.9 },
+  head: { t: wp('head').add(new THREE.Vector3(0, 0.03, 0)), d: new THREE.Vector3(0.6, 0.12, 1), r: 0.75 },
+  shoulder: { t: wp('upperarm_L'), d: new THREE.Vector3(0.9, 0.25, 0.8), r: 0.8 },
+  armpit: { t: wp('upperarm_L').add(new THREE.Vector3(-0.03, -0.08, 0)), d: new THREE.Vector3(0.6, -0.1, 1), r: 0.75 },
+  torso: { t: new THREE.Vector3(0, 1.2, 0), d: new THREE.Vector3(0.35, 0.05, 1), r: 1.6 },
+  knee: { t: wp('shin_L'), d: new THREE.Vector3(0.7, 0.1, 1), r: 0.8 },
+  elbowr: { t: wp('forearm_R'), d: new THREE.Vector3(-0.3, 0.1, -1), r: 0.5 },
+};
+function place(cam, vname, azDeg, elDeg, distMul) {
+  const v = V[vname] || V.front, dir = v.d.clone().normalize();
+  dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), azDeg * Math.PI / 180);
+  const side = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize(); dir.applyAxisAngle(side, -elDeg * Math.PI / 180);
+  cam.position.copy(v.t).addScaledVector(dir, v.r * distMul); cam.lookAt(v.t); return v.t;
+}
+const target = place(camera, view, +(Q.get('az') || 0), +(Q.get('el') || 0), +(Q.get('dist') || 1));
+const controls = new OrbitControls(camera, renderer.domElement); controls.target.copy(target); controls.update();
+// views=front:0:0:1,side:30 renders several viewports side by side (view:az:el:dist)
+const multi = (Q.get('views') || '').split(',').filter(Boolean).map(sp => {
+  const [vn, a = 0, e = 0, d = 1] = sp.split(':'); const c = new THREE.PerspectiveCamera(30, 1, 0.02, 60); place(c, vn, +a, +e, +d); return c;
+});
+
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+let last = performance.now(), time = 0;
+function frame(now) {
+  const dt = Math.min(Math.max((now - last) / 1000, 0), 1 / 20); last = now; time += dt;
+  if (pose === 'dance') applyPose('dance', time);
+  fig.update(dt);
+  if (multi.length) {
+    const w = innerWidth / multi.length, h = innerHeight; renderer.setScissorTest(true);
+    multi.forEach((c, i) => { c.aspect = w / h; c.updateProjectionMatrix(); renderer.setViewport(i * w, 0, w, h); renderer.setScissor(i * w, 0, w, h); renderer.render(scene, c); });
+    renderer.setScissorTest(false);
+  } else renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+const M = (await import('../src/assets/body-data.js')).BODY_META;
+info.textContent = `${view} / ${pose} / ${fig.materialName}   ${M.vertexCount} verts  ${M.triangleCount} tris`;
+window.__fig = fig;
+</script></body></html>

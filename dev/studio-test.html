@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studio test</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d9d9d7; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #hud { position: fixed; left: 12px; bottom: 12px; font: 12px/1.45 ui-monospace, Menlo, monospace; color: #1b1b1b;
+         background: rgba(255,255,255,0.62); padding: 6px 9px; border-radius: 4px; pointer-events: none; white-space: pre; }
+  #hud.off { display: none; }
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { buildSkeleton, jointQuat, BONES } from '../src/skeleton.js';
+import { createStudio } from '../src/studio/studio.js';
+import { createPost } from '../src/studio/post.js';
+import { createCameraRig } from '../src/studio/cameras.js';
+import { createTrails } from '../src/studio/trails.js';
+
+const P = new URLSearchParams(location.search);
+const MODE = P.get('mode') || 'orbit';
+const SIM = Number(P.get('t') || 0);
+const QUALITY = P.get('q') || 'high';
+const REGION = P.get('region');          // director test: force a dominant body region
+const HUD = P.get('hud') !== '0';
+// fixed camera for lookdev: ?cam=x,y,z&look=x,y,z&fov=n
+const FIXED = P.get('cam') ? [P.get('cam').split(',').map(Number), (P.get('look') || '0,1.2,0').split(',').map(Number), Number(P.get('fov') || 0)] : null;
+const hud = document.getElementById('hud'); if (!HUD) hud.classList.add('off');
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.05, 80);
+
+const studio = createStudio(THREE, { renderer, scene, quality: QUALITY });
+
+// ---- placeholder figure: capsules parented to the real skeleton (charcoal, albedo ~0.07)
+const RAD = { pelvis: 0.13, spine01: 0.125, spine02: 0.125, spine03: 0.13, spine04: 0.135, spine05: 0.14, spine06: 0.12,
+  neck01: 0.05, neck02: 0.048, head: 0.095, clavicle: 0.045, upperarm: 0.047, forearm: 0.038, hand: 0.03,
+  thigh: 0.078, shin: 0.054, foot: 0.04, toes: 0.03, finger: 0.0095, thumb: 0.011 };
+function radiusFor(name) {
+  const n = name.replace(/_[LR]$/, '');
+  if (RAD[n]) return RAD[n];
+  if (/^thumb/.test(n)) return RAD.thumb;
+  if (/^(index|middle|ring|pinky)/.test(n)) return RAD.finger;
+  return 0.03;
+}
+function makeFigure(albedo = 0.07) {
+  const sk = buildSkeleton(THREE);
+  const group = new THREE.Group();
+  group.add(sk.root);
+  const mat = new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(albedo, albedo, albedo * 1.03), roughness: 0.55, metalness: 0.0, sheen: 0.4, sheenRoughness: 0.5, sheenColor: new THREE.Color(0x8e8e92), specularIntensity: 0.6 });
+  const headParts = [];
+  const Y = new THREE.Vector3(0, 1, 0);
+  for (const b of BONES) {
+    if (b.name === 'root') continue;
+    const r = radiusFor(b.name);
+    const dir = new THREE.Vector3(...b.tail).sub(new THREE.Vector3(...b.head));
+    const len = dir.length();
+    const g = new THREE.CapsuleGeometry(r, Math.max(0.001, len - (b.name === 'head' ? 0.02 : 0)), 6, 14);
+    const m = new THREE.Mesh(g, mat);
+    m.castShadow = true; m.receiveShadow = true;
+    m.position.copy(dir).multiplyScalar(0.5);
+    m.quaternion.setFromUnitVectors(Y, dir.clone().normalize());
+    if (b.name === 'head') m.scale.set(1, 1, 1.12);
+    sk.byName[b.name].add(m);
+    if (/^(head|neck)/.test(b.name)) headParts.push(m);
+  }
+  const add = (bone, geo, pos, rot) => { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; m.position.set(...pos); if (rot) m.rotation.set(...rot); sk.byName[bone].add(m); return m; };
+  add('pelvis', new THREE.CapsuleGeometry(0.115, 0.17, 6, 14), [0, -0.01, 0], [0, 0, Math.PI / 2]);
+  add('spine05', new THREE.CapsuleGeometry(0.1, 0.2, 6, 14), [0, 0.03, 0.01], [0, 0, Math.PI / 2]);
+  return {
+    object3d: group, bones: sk.bones, byName: sk.byName, mesh: null,
+    setHeadVisible(v) { headParts.forEach((m) => { m.visible = v; }); },
+    update() {},
+  };
+}
+
+// placeholder matches builder A's charcoal (0x3c3c3f, about 0.045 linear); ?figure=real loads src/figure.js instead
+async function makeSoloist() {
+  if (P.get('figure') === 'real') {
+    try {
+      const { createFigure } = await import('../src/figure.js');
+      return await createFigure(THREE, { material: P.get('mat') || 'charcoal', role: 'soloist' });
+    } catch (e) { console.error('real figure failed, using placeholder', e); }
+  }
+  return makeFigure(0.045);
+}
+const soloist = await makeSoloist();
+soloist.object3d.position.copy(studio.soloistSpot);
+scene.add(soloist.object3d);
+const participant = makeFigure(0.05);
+participant.object3d.position.copy(studio.participantSpot);
+participant.object3d.rotation.y = -0.5;
+participant.object3d.visible = MODE === 'join';
+scene.add(participant.object3d);
+
+// gentle sine choreography so shadows and cameras have motion
+const q = new THREE.Quaternion();
+function pose(fig, t, ph = 0) {
+  const s = (f, o = 0) => Math.sin(t * f + o + ph);
+  const set = (n, f, a, tw) => fig.byName[n].quaternion.copy(jointQuat(THREE, n, f, a, tw, q));
+  set('pelvis', 4 * s(0.45), 4 * s(0.37, 1), 12 * s(0.6));
+  for (let i = 1; i <= 6; i++) set('spine0' + i, 5 * s(0.5, i * 0.3), 4 * s(0.7, i * 0.4), 3 * s(0.55, i * 0.2));
+  set('neck01', 6 * s(0.4, 0.5), 4 * s(0.5), 8 * s(0.33)); set('head', 8 * s(0.45, 1), 5 * s(0.6, 2), 12 * s(0.3, 0.7));
+  set('clavicle_L', 6 * s(0.8), 6 + 5 * s(0.9), 0); set('clavicle_R', 6 * s(0.75, 1), 6 + 5 * s(0.85, 2), 0);
+  set('upperarm_L', 35 + 35 * s(0.55), 25 + 30 * s(0.8), 20 * s(0.4)); set('upperarm_R', 20 + 45 * s(0.6, 2), 30 + 30 * s(0.9, 1), 15 * s(0.5));
+  set('forearm_L', 40 + 30 * s(0.7, 0.5), 0, 30 * s(0.6)); set('forearm_R', 35 + 35 * s(0.65, 1.5), 0, 25 * s(0.5, 1));
+  set('hand_L', 20 * s(0.9), 10 * s(1.1), 0); set('hand_R', 25 * s(0.85, 1), 10 * s(1.0, 2), 0);
+  for (const side of ['_L', '_R']) for (const f of ['index', 'middle', 'ring', 'pinky']) for (let k = 1; k <= 3; k++)
+    set(`${f}0${k}${side}`, 18 + 14 * s(0.7, k + f.length), 0, 0);
+  set('thigh_L', 18 + 14 * s(0.7), 8 + 4 * s(0.5), 10); set('shin_L', 25 + 20 * s(0.7, 0.3), 0, 0); set('foot_L', -10 + 10 * s(0.7, 0.6), 0, 0);
+  set('thigh_R', 6 + 3 * s(0.4), 5, 8); set('shin_R', 10 + 5 * s(0.4, 0.4), 0, 0); set('foot_R', 0, 0, 0);
+  // keep the lower ankle on the floor
+  fig.byName.root.position.set(0, 0, 0);
+  fig.object3d.updateMatrixWorld(true);
+  const yL = fig.byName.foot_L.getWorldPosition(new THREE.Vector3()).y, yR = fig.byName.foot_R.getWorldPosition(new THREE.Vector3()).y;
+  fig.byName.root.position.y = 0.075 - Math.min(yL, yR);
+  fig.object3d.updateMatrixWorld(true);
+}
+
+const post = createPost(THREE, { renderer, scene, camera, quality: QUALITY, autoQuality: P.get('auto') !== '0' });
+post.onAutoQuality = (lv) => console.warn('[perf] auto quality ->', lv);
+const cams = createCameraRig(THREE, { camera, dom: renderer.domElement, studio });
+if (P.get('focus')) cams.focus(P.get('focus'));
+const trails = createTrails(THREE, { scene, figure: soloist });
+trails.setEnabled(P.get('trails') === '1');
+if (P.get('tw')) trails.setStyle({ width: Number(P.get('tw')), opacity: 1 });
+window.__dbg = { trails, scene, soloist, renderer, camera, post };
+cams.on('study', (v) => console.warn('[study]', v));
+for (const n of (P.get('off') || '').split(',')) if (post.passes[n]) post.passes[n].enabled = false;
+if (P.get('exp')) post.setGrade({ exposure: Number(P.get('exp')) });
+if (P.get('debug') === 'fog') post.passes.shafts.debug = true;
+if (P.get('dens')) studio.shafts.density = Number(P.get('dens'));
+
+function activityAt(t) {
+  const regions = { center: 0.1, pelvis: 0.1, spine: 0.1, arms: 0.1, hands: 0.1, legs: 0.1, feet: 0.1, head: 0.1, flesh: 0.1 };
+  const cycle = ['hands', 'spine', 'pelvis', 'feet', 'flesh', null];
+  const r = REGION || cycle[Math.floor(t / 11) % cycle.length];
+  if (r && regions[r] !== undefined) regions[r] = 0.85;
+  return { regions, energy: 0.5, tempo: 0.6, dominant: null };
+}
+
+let simTime = 0, danceTime = 0;
+const SPEED = Number(P.get('speed') || 1);   // dancer time multiplier, like app.setSpeed
+function step(dt) {
+  simTime += dt;
+  const ddt = dt * SPEED;
+  danceTime += ddt;
+  pose(soloist, danceTime, 0);
+  soloist.update(dt);
+  if (participant.object3d.visible) pose(participant, danceTime * 0.93, 1.7);
+  trails.update(ddt);
+  studio.update(dt, simTime);
+  if (FIXED) { camera.position.set(...FIXED[0]); camera.lookAt(...FIXED[1]); if (FIXED[2]) { camera.fov = FIXED[2]; camera.updateProjectionMatrix(); } }
+  else cams.update(dt, { activity: activityAt(simTime), soloist, participant: participant.object3d.visible ? participant : null });
+}
+
+participant.setHeadVisible(MODE !== 'join');
+if (MODE !== 'orbit') {
+  // start from orbit so the mode change is exercised, then settle
+  cams.setMode(MODE);
+}
+const STUDY_AT = Number(P.get('studyAt') || 0);
+let studied = false;
+for (let i = 0; i < Math.round(SIM * 30); i++) {
+  if (P.get('study') && !studied && i / 30 >= STUDY_AT) { cams.study(P.get('study')); studied = true; }
+  step(1 / 30);
+}
+if (P.get('study') && !studied) cams.study(P.get('study'));
+step(0);
+
+addEventListener('keydown', (e) => {
+  const m = { Digit1: 'orbit', Digit2: 'walk', Digit3: 'join', Digit4: 'director' }[e.code];
+  if (m) { cams.setMode(m); participant.object3d.visible = m === 'join'; participant.setHeadVisible(m !== 'join'); }
+  if (e.code === 'KeyC') cams.cycle();
+  if (e.code === 'KeyH') cams.focus('hand_L');
+  if (e.code === 'KeyB') cams.focus('spine05');
+  if (e.code === 'KeyT') trails.setEnabled(!trails.enabled);
+  const sv = { KeyF: 'front', KeyS: 'side', KeyK: 'back', KeyR: 'three', KeyN: 'hands', KeyM: 'feet', KeyP: 'spine', KeyL: 'pelvis', KeyO: 'overhead' }[e.code];
+  if (sv && cams.mode !== 'walk') cams.study(sv);
+  if (e.code === 'KeyQ') post.setQuality(post.quality === 'high' ? 'medium' : post.quality === 'medium' ? 'low' : 'high');
+});
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  post.setSize(innerWidth, innerHeight);
+});
+
+let last = performance.now(), frames = 0, winStart = last, logged = 0;
+function frame(now) {
+  const dt = Math.min(Math.max((now - last) / 1000, 0), 1 / 20);
+  last = now;
+  step(dt);
+  post.render(dt);
+  frames++;
+  if (now - winStart > 1500) {
+    const fps = (frames * 1000) / (now - winStart);
+    const d = cams.director;
+    const line = `mode ${cams.mode}   fps ${fps.toFixed(1)}   quality ${post.quality}` + (d ? `   shot ${d.kind} ${d.bone}` : '');
+    hud.textContent = line + (cams.studying ? `   study ${cams.studying}` : '') + '\n1 orbit  2 walk  3 join  4 director  c cycle  t trails  q quality\nstudy: f front  s side  k back  r three  n hands  m feet  p spine  l pelvis  o overhead';
+    console.warn(`[perf] ${line}  frame ${(1000 / fps).toFixed(1)} ms`);
+    frames = 0; winStart = now; logged++;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

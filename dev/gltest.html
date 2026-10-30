@@ -1,0 +1,11 @@
+<!doctype html><html><body style="margin:0"><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+const r = new THREE.WebGLRenderer({antialias:true}); r.setSize(innerWidth, innerHeight); r.shadowMap.enabled = true; document.body.appendChild(r.domElement);
+const s = new THREE.Scene(); s.background = new THREE.Color(0xeeeeee);
+const c = new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.1, 100); c.position.set(0,1.5,4); c.lookAt(0,1,0);
+const l = new THREE.DirectionalLight(0xffffff, 3); l.position.set(3,5,2); l.castShadow = true; s.add(l, new THREE.HemisphereLight(0xffffff,0x888888,1));
+const m = new THREE.Mesh(new THREE.TorusKnotGeometry(0.5,0.15,200,32), new THREE.MeshStandardMaterial({color:0x222222, roughness:0.5})); m.position.y = 1; m.castShadow = true; s.add(m);
+const f = new THREE.Mesh(new THREE.PlaneGeometry(10,10), new THREE.MeshStandardMaterial({color:0xcccccc})); f.rotation.x = -Math.PI/2; f.receiveShadow = true; s.add(f);
+r.render(s, c);
+</script></body></html>
