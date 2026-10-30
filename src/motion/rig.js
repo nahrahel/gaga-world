@@ -4,6 +4,7 @@
 // soft clamp to the joint limits), solves the legs with two-bone IK onto planted feet, aims the upper arms
 // by direction (elevation + plane), pushes arms out of the torso, and keeps a root-space FK cache.
 import { BONES, BONE_INDEX, LANDMARKS } from '../skeleton.js';
+import { cd2 } from './noise.js';
 
 // ---------------------------------------------------------------- channel layout
 export const TRUNK_BONES = ['pelvis', 'spine01', 'spine02', 'spine03', 'spine04', 'spine05', 'spine06', 'neck01', 'neck02', 'head'];
@@ -244,9 +245,11 @@ export function createRig(THREE) {
 
   // collision volumes (in the frame of a trunk bone): [bone, yMin, yMax, cz, rx, rz]
   const SLABS = [[BI.pelvis, -0.12, 0.08, 0.02, 0.165, 0.115], [BI.spine02, -0.02, 0.17, 0.05, 0.135, 0.11], [BI.spine05, -0.09, 0.15, 0.06, 0.15, 0.12]];
-  const push = V(), bestPush = V(), lp = V(), tp = V(), qinv = Q();
+  const push = V(), bestPush = V(), lp = V(), tp = V(), qinv = Q(), accP = V(), tmpP = V(), rho = V(), rhoK = V();
+  // Push needed to move a point out of the torso, head and floor volumes. Several volumes can overlap a point; their pushes
+  // are blended by depth cubed (the deepest dominates, equal depths average), so the push never flips when the deepest one changes.
   function penetration(P, pt, r, s, outPush, soft) {
-    outPush.set(0, 0, 0); let best = 0;
+    outPush.set(0, 0, 0); let wsum = 0; accP.set(0, 0, 0);
     for (let si = 0; si < SLABS.length; si++) {
       const SL = SLABS[si], bi = SL[0], y0 = SL[1], y1 = SL[2], cz = SL[3], rx = SL[4], rz = SL[5];
       lp.copy(pt).sub(P.wp[bi]).applyQuaternion(qinv.copy(P.wq[bi]).invert());
@@ -271,38 +274,71 @@ export function createRig(THREE) {
       }
       px *= yf; pz *= yf;
       const m = Math.hypot(px, pz);
-      if (m > best) { best = m; outPush.set(px, 0, pz).applyQuaternion(P.wq[bi]); }
+      if (m > 1e-6) { const w = m * m * m; wsum += w; accP.addScaledVector(tmpP.set(px, 0, pz).applyQuaternion(P.wq[bi]), w); }
     }
     // head sphere
     const hb = BI.head;
     pointOf(P, hb, 0, 0.085, 0.02, tp);
     const dx = pt.x - tp.x, dy = pt.y - tp.y, dz = pt.z - tp.z, dl = Math.hypot(dx, dy, dz), hr = 0.105 + r;
-    if (dl < hr && hr - dl > best) { best = hr - dl; const k = (hr - dl) / (dl || 1); outPush.set(dx * k, dy * k, dz * k); }
+    if (dl < hr && hr - dl > 1e-6) { const mh = hr - dl, k = mh / (dl || 1), w = mh * mh * mh; wsum += w; accP.addScaledVector(tmpP.set(dx * k, dy * k, dz * k), w); }
     // floor
     const fy = r + 0.012 - pt.y;
-    if (fy > best) { best = fy; outPush.set(0, fy, 0); }
-    return best;
+    if (fy > 1e-6) { const w = fy * fy * fy; wsum += w; accP.addScaledVector(tmpP.set(0, fy, 0), w); }
+    if (wsum <= 0) return 0;
+    outPush.copy(accP).multiplyScalar(1 / wsum);
+    return outPush.length();
   }
 
   const armPts = [V(), V(), V(), V()], ARM_R = [0.042, 0.038, 0.032, 0.03], SOFT = [0, 0.012, 0.03, 0.03];
   function armFK(P, C) { fk(P, C.up); fk(P, C.fore); fk(P, C.hand); }
+  const qc0 = Q(), qc1 = Q();
   function armCollide(P, s) {
     const C = S[s]; let total = 0;
+    qc0.copy(P.b[C.up].quaternion);                // the pose before any correction
     for (let it = 0; it < 3; it++) {
       pointOf(P, C.fore, 0, 0, 0, armPts[0]);                              // elbow
       pointOf(P, C.fore, C.armDir.x * C.foreLen * 0.5, C.armDir.y * C.foreLen * 0.5, 0, armPts[1]);
       pointOf(P, C.hand, 0, 0, 0, armPts[2]);                              // wrist
       pointOf(P, C.hand, C.armDir.x * C.handLen, C.armDir.y * C.handLen, 0, armPts[3]);
-      let best = 0, bi = -1;
-      for (let k = 0; k < 4; k++) { const m = penetration(P, armPts[k], ARM_R[k], s, push, SOFT[k]); if (m > best) { best = m; bi = k; bestPush.copy(push); } }
-      if (best < 0.002) break;
-      total += best;
+      // each arm point that is inside a volume asks for its own rotation about the shoulder (angle = push / lever); the
+      // requests are blended by size, so the correction stays continuous as one point takes over from another
       const sh = P.wp[C.up];
-      v1.copy(armPts[bi]).sub(sh); v2.copy(armPts[bi]).addScaledVector(bestPush, 1.15).sub(sh);
-      v1.normalize(); v2.normalize();
-      q1.setFromUnitVectors(v1, v2);                 // world correction
+      let best = 0, wsum = 0; rho.set(0, 0, 0);
+      for (let k = 0; k < 4; k++) {
+        const m = penetration(P, armPts[k], ARM_R[k], s, push, SOFT[k]);
+        if (m < 0.0004) continue;
+        if (m > best) best = m;
+        const ks = smoothstep01(m / 0.008);            // grows from zero with zero slope: a limb meeting or leaving the torso is eased, never kicked
+        v1.copy(armPts[k]).sub(sh); v2.copy(armPts[k]).addScaledVector(push, 1.15 * ks).sub(sh);
+        v1.normalize(); v2.normalize();
+        rhoK.crossVectors(v1, v2); const sn = rhoK.length(), ang = Math.atan2(sn, v1.dot(v2));
+        if (sn < 1e-9 || ang < 1e-7) continue;
+        rhoK.multiplyScalar(ang / sn);                 // rotation vector (axis * angle)
+        const w = ang * ang * ang; wsum += w; rho.addScaledVector(rhoK, w);
+      }
+      if (best < 0.0004 || wsum <= 0) break;
+      total += best;
+      rho.multiplyScalar(1 / wsum);
+      const ra = rho.length();
+      if (ra > 1e-9) q1.setFromAxisAngle(rho.multiplyScalar(1 / ra), ra); else q1.identity();   // world correction
       q2.copy(P.wq[C.clav]).invert().multiply(q1).multiply(P.wq[C.clav]); // to clavicle frame
       P.b[C.up].quaternion.premultiply(q2);
+      armFK(P, C);
+    }
+    // The solved correction is applied through a short two stage follower (quick to engage, slower to let go), so a limb
+    // that meets the torso is stopped within a few frames and releases gently, and no push ever appears as a one frame kick.
+    {
+      qc1.copy(P.b[C.up].quaternion).multiply(qc0.invert());   // total correction, clavicle frame
+      if (qc1.w < 0) { qc1.x = -qc1.x; qc1.y = -qc1.y; qc1.z = -qc1.z; qc1.w = -qc1.w; }
+      const sn = Math.hypot(qc1.x, qc1.y, qc1.z), ang = 2 * Math.atan2(sn, qc1.w), f = sn > 1e-9 ? ang / sn : 2;
+      const CS = (P.collS || (P.collS = [null, null]))[s] || (P.collS[s] = [0, 1, 2].map(() => ({ x1: 0, v1: 0, x2: 0, v2: 0 })));
+      const tx = qc1.x * f, ty = qc1.y * f, tz = qc1.z * f;
+      const cur = Math.hypot(CS[0].x2, CS[1].x2, CS[2].x2), want = Math.hypot(tx, ty, tz);
+      const w = want > cur ? 48 : 12;
+      const rx = cd2(CS[0], tx, w, P.dt), ry = cd2(CS[1], ty, w, P.dt), rz = cd2(CS[2], tz, w, P.dt), ra = Math.hypot(rx, ry, rz);
+      if (ra > 1e-7) qc1.setFromAxisAngle(rho.set(rx / ra, ry / ra, rz / ra), ra); else qc1.identity();
+      qc0.invert();                                            // back to the pre-collision pose
+      P.b[C.up].quaternion.copy(qc1).multiply(qc0);
       armFK(P, C);
     }
     P.collide[s] = total;
@@ -351,7 +387,11 @@ export function createRig(THREE) {
       q3.setFromUnitVectors(C.armDir, uDir);
       let tw = c[o + A.UTW];
       // droop: roll the upper arm so the elbow bend points toward the floor (forearm and hand dangle from a floating arm)
-      const dr = Math.min(1, Math.max(0, c[o + A.DROOP])) * Math.min(1, Math.max(0, (elev - 25) / 35)) * Math.min(1, Math.max(0, (118 - elev) / 22));
+      const drT = Math.min(1, Math.max(0, c[o + A.DROOP])) * smoothstep01((elev - 25) / 35) * smoothstep01((118 - elev) / 22);
+      // the roll is large (up to about 110 deg), so its weight follows the target through two damped stages: an arm that
+      // passes quickly through the droop range never whips its forearm round
+      const ds = (P.droopS || (P.droopS = [null, null]))[s] || (P.droopS[s] = { x1: drT, v1: 0, x2: drT, v2: 0 });
+      const dr = cd2(ds, drT, 9, P.dt);
       if (dr > 1e-5) { // no threshold: the roll grows continuously from zero
         const bd = v1.copy(C.bendRest).applyQuaternion(q3);                       // bend direction after the swing
         const gd = v2.copy(DOWN).applyQuaternion(qinv.copy(P.wq[C.clav]).invert());
@@ -362,7 +402,7 @@ export function createRig(THREE) {
           const need = -SG[s] * ang;
           let d = need - tw; d -= 360 * Math.round(d / 360);
           // near a half turn the solution flips side: fade the droop out there so the roll never pops
-          const fade = Math.min(1, Math.max(0, (150 - Math.abs(d)) / 50));
+          const fade = smoothstep01((150 - Math.abs(d)) / 50);
           tw += d * dr * fade;
         }
       }

@@ -50,6 +50,9 @@ function shakeGain(v, sp, dist) { return v * clamp(0.25 + (sp - dist) * 0.55, 0,
 function quakeQ(t, k, s0) { return n3(t * 6.2, s0 + k) * (0.35 + 0.65 * smoothstep(-0.3, 0.5, n1(t * 0.7, s0))); }
 function grooveBeat(p) { return Math.pow(0.5 + 0.5 * Math.cos(p), 1.6); }
 
+// true while a body shape or an arm posture was picked less than 0.8 s ago (its blend is just starting)
+function posturePicking(P) { return P.shape.t < 0.8 || P.arms[0].t < 0.8 || P.arms[1].t < 0.8; }
+
 // event slot helper: returns true when the timer fires
 function tick(st, key, dt, lo, hi, rng) {
   st[key] -= dt;
@@ -90,7 +93,7 @@ export function baseLayer(P) {
     armAdd(T, s, A.FTW, dg * 12 * n2(ts * 0.1, s0 + 73 + s * 9));
   }
   // ribcage: its own slow sway, twist and side bend on top of the pelvis (the chest is never a rigid block)
-  const rb = 0.6 + 0.6 * (P.shapeDrive || 0) + 0.4 * fl;
+  const rb = (0.6 + 0.6 * (P.shapeDrive || 0) + 0.4 * fl) * M.rib;
   for (let i = 3; i <= 6; i++) {
     const tt = ts - (i - 3) * 0.1;
     T[T3(i, 1)] += rb * 1.6 * n2(tt * 0.27, s0 + 80);
@@ -305,51 +308,60 @@ Q.biba = {
   },
 };
 
-// ---- lena: the pelvis as the prime mover; spine follows segment by segment, arms passively later
+// ---- lena: the pelvis as the prime mover. Slow, irregular impulses (0.3 to 0.8 Hz, in bursts with quieter gaps) tilt, shift
+// and turn the pelvis first; each spine segment answers a beat later than the one below, the chest and head arrive last, and
+// the arms and knees take what is left of the impulse after it has travelled up the trunk.
+// Each pelvic axis is a blend of four slow oscillations (about 0.3 to 0.9 Hz) whose rates wander, so the push never
+// repeats; the blend is shaped so peaks rise sharply (impulses) and gated so they arrive in bursts with quieter gaps.
+const LENA_F = [[0.38, 0.52, 0.7, 0.92], [0.36, 0.48, 0.64, 0.86], [0.34, 0.45, 0.6, 0.8]]; // tilt side, tilt fore-aft, turn
+const LENA_W = [0.8, 1, 0.9, 0.7];
+const impulse = (x) => clamp(x * (0.7 + 0.3 * Math.abs(x)), -1.5, 1.5);
 Q.lena = {
   attack: 2.0, release: 2.4, shapeGain: 0.6,
   shapes: { plie: 0.45, readyLow: 1.6, armsMid: 0.4, ready: 0.9, lunge: 0.3 },
   armPrefs: { hang: 1.2, curveLow: 0.8, hangBack: 0.6, floatLow: 0.4, backLow: 0.4 },
   regions: { center: 1, pelvis: 0.9, spine: 0.6, legs: 0.45, arms: 0.3, head: 0.25 },
-  mod(P, v) { P.mods.travel += 0.1 * v; P.mods.weightShift *= 1 - 0.6 * v; },
-  tempo: (P) => 0.3,
-  init(P) { P.q.lena = { ph: P.rng() * TAU, dir: 1, dirS: 1, hist: new DelayLine(5, 200, 1 / 60) }; },
+  mod(P, v) { P.mods.travel += 0.1 * v; P.mods.weightShift *= 1 - 0.6 * v; P.mods.rib *= 1 - 0.85 * v; P.mods.drift *= 1 - 0.3 * v; P.mods.liftAllowed *= 1 - 0.9 * v; }, // the ribcage's own sway steps back (the chest answers the pelvis) and the feet stay planted
+  tempo: (P) => 0.5,
+  init(P) { P.q.lena = { p: Float64Array.from({ length: 12 }, () => P.rng() * TAU), hist: new DelayLine(5, 300, 1 / 60) }; },
   gen(P, v) {
     const T = P.T, ts = P.ts, s0 = P.ns + 3000, st = P.q.lena;
-    const f = 0.2 + 0.1 * n2(ts * 0.05, s0);
-    const dTarget = n1(ts * 0.025, s0 + 1) > -0.35 ? 1 : -1; // mostly one way, reverses now and then
-    st.dirS += (dTarget - st.dirS) * Math.min(1, P.dts * 0.8);
-    st.ph += TAU * f * P.dts * st.dirS;
-    const m = 0.5 + 0.5 * n2(ts * 0.04, s0 + 2);           // circle <-> figure eight
-    const ph = st.ph;
-    const rx = v * 0.085 * (0.8 + 0.3 * n2(ts * 0.06, s0 + 3)), rz = v * 0.065 * (0.8 + 0.3 * n2(ts * 0.05, s0 + 4));
-    const x = rx * Math.sin(ph), z = rz * ((1 - m) * Math.cos(ph) + m * Math.sin(2 * ph));
-    const tf_ = v * 17 * ((1 - m) * Math.cos(ph + 0.9) + m * Math.sin(2 * ph + 0.9)); // pelvic tilt leads the travel
-    const ta = v * 14 * Math.sin(ph + 0.7);
-    const tt = v * 11 * Math.sin(ph * 0.5 + 0.4 * n2(ts * 0.1, s0 + 5)) + v * 4 * n2(ts * 0.2, s0 + 6);
-    st.hist.push(ts, tf_, ta, tt, x, z);
+    for (let a = 0; a < 3; a++) for (let k = 0; k < 4; k++) st.p[a * 4 + k] += TAU * LENA_F[a][k] * (1 + 0.25 * n2(ts * 0.05 + a, s0 + 20 + a * 4 + k)) * P.dts;
+    const osc = (a, off) => { let x = 0; for (let k = 0; k < 4; k++) x += LENA_W[k] * Math.sin(st.p[a * 4 + k] + off * (1 + 0.7 * k)); return x / 2.0; };
+    const G = 0.45 + 0.55 * smoothstep(-0.3, 0.35, n1(ts * 0.06, s0 + 4));    // impulses come in bursts
+    const lat = v * 15 * G * impulse(osc(0, 0)), sag = v * 10 * G * impulse(osc(1, 0)), tw = v * 11 * G * impulse(osc(2, 0));
+    const x = v * 0.06 * G * impulse(osc(0, -0.7)), z = v * 0.045 * G * impulse(osc(1, -1.1));
+    st.hist.push(ts, sag, lat, tw, x, z);
     T[PX] += x; T[PZ] += z;
-    T[PY] -= v * (0.015 + 0.02 * (0.5 - 0.5 * Math.cos(2 * ph)));
-    T[T3(0, 0)] += tf_; T[T3(0, 1)] += ta; T[T3(0, 2)] += tt;
-    // follow chain: world tilt of segment i follows the pelvis delayed by i * d, fading toward the head
+    T[PY] -= v * (0.012 + 0.02 * Math.min(1, (Math.abs(lat) + Math.abs(sag)) / 14));
+    T[T3(0, 0)] += sag; T[T3(0, 1)] += lat; T[T3(0, 2)] += tw;
+    // the trunk chain: the world tilt of segment i is the pelvis tilt of i * d seconds ago, shrinking toward the head
     const d = 0.14;
-    let pf = tf_, pa = ta, pt = tt;
+    let pf = sag, pa = lat, pt = tw;
     for (let i = 1; i <= 9; i++) {
-      const g = Math.max(0, 1 - i * 0.09);
-      const wf = g * st.hist.read(i * d, 0), wa = g * st.hist.read(i * d, 1), wt = g * st.hist.read(i * d, 2);
-      // translation lag: the chest stays where the pelvis was a moment ago
-      const lagX = st.hist.read(i * d, 3) - x, lagZ = st.hist.read(i * d, 4) - z;
-      const lf = i <= 6 ? -lagZ * 60 / 6 : 0, la = i <= 6 ? lagX * 60 / 6 : 0;
-      T[T3(i, 0)] += wf - pf + lf; T[T3(i, 1)] += wa - pa + la; T[T3(i, 2)] += wt - pt;
+      const g = Math.max(0, 1 - i * 0.115), a = Math.min(i, 6.5) * d;
+      const wf = g * st.hist.read(a, 0), wa = g * st.hist.read(a, 1), wt = g * st.hist.read(a, 2);
+      // the chest stays where the pelvis was a moment ago, so a shift of the pelvis leans the trunk the other way first
+      const lagX = st.hist.read(a, 3) - x, lagZ = st.hist.read(a, 4) - z;
+      const lf = i <= 6 ? -lagZ * 45 / 6 : 0, la = i <= 6 ? lagX * 45 / 6 : 0;
+      // plus a share of the side tilt itself, passed up one segment at a time, so the wave stays readable on the spine
+      const sb = i <= 6 ? 0.16 * st.hist.read((i - 0.5) * d, 1) : 0;
+      T[T3(i, 0)] += wf - pf + lf; T[T3(i, 1)] += wa - pa + la + sb; T[T3(i, 2)] += wt - pt;
       pf = wf; pa = wa; pt = wt;
     }
     for (let s = 0; s < 2; s++) {
-      legAdd(T, s, L.KNEE, v * 6 * Math.sin(ph + s * Math.PI));
-      // arms follow last: they swing after the pelvis path with more lag
-      const ax = st.hist.read(0.45, 3), az = st.hist.read(0.45, 4);
-      armAdd(T, s, A.UAZ, -az * 260 + SG[s] * ax * 120);
-      armAdd(T, s, A.UEL, SG[s] * -ax * 160 + 6 * v);
-      armAdd(T, s, A.EF, 10 * v);
+      // knees swivel with the pelvis, a little late
+      legAdd(T, s, L.KNEE, SG[s] * 0.5 * st.hist.read(0.3, 1) + 0.25 * st.hist.read(0.3, 2));
+      // the arms answer last: the upper arm after the chest, the elbow and the wrist later still
+      const ax = st.hist.read(0.55, 3), az = st.hist.read(0.55, 4), al = st.hist.read(0.6, 1), at = st.hist.read(0.6, 2), af = st.hist.read(0.6, 0);
+      const ex = st.hist.read(0.8, 3), el = st.hist.read(0.85, 1), et = st.hist.read(0.85, 2);
+      const wl = st.hist.read(1.05, 1), wt2 = st.hist.read(1.05, 2), wf2 = st.hist.read(1.05, 0);
+      armAdd(T, s, A.UAZ, -az * 300 + SG[s] * ax * 70 + 0.5 * at);
+      armAdd(T, s, A.UEL, SG[s] * (-ax * 120 - 0.5 * al) + 6 * v + 0.3 * af);
+      armAdd(T, s, A.EF, 10 * v + 0.9 * SG[s] * (ex * 260 + el * 1.1) + 0.6 * Math.abs(et));
+      armAdd(T, s, A.FTW, 1.4 * et * SG[s] + 0.8 * wt2);
+      armAdd(T, s, A.WF, 1.8 * wf2 - 1.2 * SG[s] * wl);
+      armAdd(T, s, A.WA, 1.2 * SG[s] * wl + 0.7 * wt2);
       T[ac(s, A.HANG)] += 0.15 * v;
     }
   },
@@ -546,7 +558,10 @@ Q.shake = {
   gen(P, v) {
     const st = P.q.shake, T = P.T, Ac = P.ACC, tf = P.tf, s0 = P.ns + 6000;
     const tau = 30 - 22 * v;
-    st.spread += (1 - st.spread) * Math.min(1, P.dt / tau);
+    // on release the spread relaxes with the layer's own fade (never a step: the gains of the hands and forearms follow it)
+    const pl = P.lay.get('shake');
+    if (pl && pl.tgt <= 0) st.spread -= st.spread * Math.min(1, P.dt / 3.5);
+    else st.spread += (1 - st.spread) * Math.min(1, P.dt / tau);
     const sp = st.spread * 7.5;
     const hz = 4.6 * P.shakeHz, ft = tf * hz;
     const s1 = n2(ft, s0), s2 = n2(ft * 1.07 + 3, s0 + 1), s3 = n2(ft * 0.93 + 7, s0 + 2);
@@ -579,7 +594,6 @@ Q.shake = {
     }
     for (let i = 7; i <= 9; i++) { Ac[T3(i, 0)] += (i === 9 ? ghd : gn) * 4 * n2((tf - 0.04 * i) * hz, s0 + 60 + i); Ac[T3(i, 1)] += (i === 9 ? ghd : gn) * 3.5 * n2((tf - 0.04 * i) * hz, s0 + 70 + i); }
   },
-  onRelease(P) { P.q.shake.spread *= 0.5; },
   glow(P, v, push) { const sp = P.q.shake.spread; push('spine02', 0, 0.04, 0.05, 0.05 + 0.3 * sp, v * (0.6 + 0.4 * sp)); },
 };
 
@@ -803,6 +817,7 @@ Q.silly = {
   gen(P, v) {
     const st = P.q.silly, rng = P.rng, Ac = P.ACC, T = P.T;
     st.next -= P.dt * P.tempo;
+    if (st.next <= 0 && posturePicking(P)) st.next = 0.1; // a quirk waits a moment while a posture change is starting
     if (st.next <= 0) {
       st.next = 0.8 + rng() * 1.4;
       const e = firstFree(st.ev);
@@ -847,8 +862,16 @@ function fireExplosion(P, strength) {
   const pref = P.prefLimb;
   let kind = rng() < 0.5 ? (pref < 2 ? 0 : 2) : Math.floor(rng() * 5);
   // kinds: 0 arm thrust, 1 both arms pop overhead in fists, 2 low kick, 3 torso snap, 4 side leg flick
-  if ((kind === 2 || kind === 4) && (P.stepping || P.st.feet[0].lift > 0.01 || P.st.feet[1].lift > 0.01)) kind = 0;
-  e.kind = kind; e.side = pref < 2 ? (rng() < 0.7 ? pref : 1 - pref) : (rng() < 0.7 ? pref - 2 : 3 - pref);
+  e.side = pref < 2 ? (rng() < 0.7 ? pref : 1 - pref) : (rng() < 0.7 ? pref - 2 : 3 - pref);
+  // a kick can only use the foot that is already unloaded: the weight is on the other leg and the balance gate for that foot is
+  // open. Otherwise the burst starts (the foot would sit pinned under the floor until the gate opened mid-burst and launch late,
+  // sliding) and goes to the arms and torso instead.
+  if (kind === 2 || kind === 4) {
+    const free = P.X[WS] > 0 ? 1 : 0;
+    const ready = !P.stepping && P.st.feet[0].lift < 0.01 && P.st.feet[1].lift < 0.01 && Math.abs(P.X[WS]) > 0.5 && P.gate[free] > 0.9 && P.comD > 0.02;
+    if (ready) e.side = free; else kind = rng() < 0.6 ? 0 : 3;
+  }
+  e.kind = kind; e.arm = 0;
   e.el = 70 + rng() * 100; e.az = -20 + rng() * 130; e.tw = (rng() * 2 - 1); e.dir = rng() < 0.5 ? -1 : 1;
 }
 Q.explosive = {
@@ -862,7 +885,11 @@ Q.explosive = {
   gen(P, v) {
     const st = P.q.explosive;
     st.next -= P.dt;
-    if (st.next <= 0) { st.next = 1.2 + P.rng() * 1.8; fireExplosion(P, v); }
+    if (st.next <= 0) {
+      // not while a posture change is starting: the burst waits a moment so it lands on a settled pose
+      if (posturePicking(P)) { st.next = 0.1; st.late = (st.late || 0) + 0.1; }
+      else { st.next = Math.max(0.5, 1.2 + P.rng() * 1.8 - (st.late || 0)); st.late = 0; fireExplosion(P, v); } // the cadence is kept: time spent waiting is taken off the next gap
+    }
   },
   always(P) { // accents keep playing after release
     const st = P.q.explosive, Ac = P.ACC, X = P.X;
@@ -870,10 +897,11 @@ Q.explosive = {
       if (!e.on) continue;
       e.t += P.dt;
       if (e.t < 0) continue;
-      if (e.t > e.rise + 0.08 + e.decay * 1.6) { e.on = false; continue; }
-      // fast rise, a short hold at the peak (0.08 s), then a soft decay
-      const tu = e.t > e.rise ? Math.max(e.rise, e.t - 0.08) : e.t;
-      let k = burst(tu, e.rise, e.decay);
+      if (e.t > e.rise + 0.08 + e.decay * 1.3) { e.on = false; continue; }
+      // fast rise, a short hold at the peak (0.08 s), then a soft recovery that starts with zero slope (an exponential tail
+      // would turn from the peak into a fall in one frame, which reads as a second snap)
+      const td = e.t - e.rise - 0.08;
+      let k = e.t < e.rise ? Math.sin(e.t / e.rise * Math.PI * 0.5) : td <= 0 ? 1 : 1 - smoother(td / (e.decay * 1.3));
       if (e.t > e.rise && e.t < e.rise + 0.2) k *= 1 + 0.08 * Math.sin(Math.PI * (e.t - e.rise) / 0.2);
       k *= e.amp;
       const s = e.side;
@@ -936,7 +964,7 @@ Q.collapse = {
     if (t < st.drop) { const x = t / st.drop; k = x * x; }            // gravity: accelerating fall
     else if (t < st.drop + st.hold) k = 1;
     else k = 1 - smoother((t - st.drop - st.hold) / st.rec);          // carried up again
-    k = Math.max(0, k) * (st.amp || 0);
+    k = Math.max(0, k) * (st.amp || 0) * Math.min(1, v / 0.25); // a fall in flight fades with the layer (no cut when the release ends)
     if (!(k > 0)) return;
     if (st.kind === 0) { // chest
       for (let i = 4; i <= 6; i++) Ac[T3(i, 0)] += k * 9; Ac[T3(7, 0)] += k * 9; Ac[T3(9, 0)] += k * 6;

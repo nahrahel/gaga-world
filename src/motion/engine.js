@@ -78,7 +78,7 @@ const SEGM = [['head', 0.069, 0.5], ['neck01', 0.006, 0.5], ['neck02', 0.006, 0.
   ['spine01', 0.0463, 0.5], ['spine02', 0.0463, 0.5], ['spine03', 0.0464, 0.5], ['spine04', 0.072, 0.5], ['spine05', 0.072, 0.5], ['spine06', 0.072, 0.5],
   ...['_L', '_R'].flatMap(s => [['upperarm' + s, 0.028, 0.436], ['forearm' + s, 0.016, 0.43], ['hand' + s, 0.006, 0.8], ['thigh' + s, 0.1, 0.433], ['shin' + s, 0.0465, 0.433], ['foot' + s, 0.0145, 0.45]])]
   .map(([n, m, f]) => { const b = BONES[BONE_INDEX[n]]; return { i: BONE_INDEX[n], m, v: [(b.tail[0] - b.head[0]) * f, (b.tail[1] - b.head[1]) * f, (b.tail[2] - b.head[2]) * f] }; });
-const CHAIN_BETA = [0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.6, 0.6, 0.66];
+const CHAIN_BETA = [0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.9, 0.9, 0.9]; // neck and head take nearly all of their moving part from the segment below (the head follows the chest)
 
 export function createEngine(THREE, { vocab } = {}) {
   const rig = createRig(THREE);
@@ -109,7 +109,7 @@ export function createEngine(THREE, { vocab } = {}) {
       footEv: { t: -1, wait: 1.5 + rng() * 3, side: 0, dur: 0.6, h: 0.04 },
       feet: [0, 1].map(s => ({ bx: SG[s] * BASE[STW], bz: rig.S[s].ballRest.z, yaw: SG[s] * BASE[FYAW], px: 0, step: { on: false, t: 0, wait: 0, dur: 0.5, x0: 0, z0: 0, y0: 0, x1: 0, z1: 0, y1: 0, h: 0.06 } })),
       st: { feet: [0, 1].map(() => ({ bx: 0, bz: 0, yaw: 0, peel: 0, inv: 0, lift: 0, liftFwd: 0, point: 0, knee: 0, toe: 0 })) },
-      stepping: false, stepCool: 0, lean: [0, 0], travel: { x: 0, z: 0, f: 0, tx: 0, tz: 0, tf: 0, timer: 4 + rng() * 6 },
+      peelOn: [false, false], stepping: false, stepCool: 0, lean: [0, 0], travel: { x: 0, z: 0, f: 0, tx: 0, tz: 0, tf: 0, timer: 4 + rng() * 6 },
       gaze: { mode: 0, timer: 0.5, x: 0, y: 1.6, z: 4, hand: 0, ya: { x1: 0, v1: 0, x2: 0, v2: 0 }, pi: { x1: 0, v1: 0, x2: 0, v2: 0 }, init: false },
       chain: { b: new Float32Array(30), f1: new Float32Array(30), f2: new Float32Array(30), init: false },
       com: [0, 0, 0], comOff: [0, 0], balCorr: [0, 0], balX: { x1: 0, v1: 0, x2: 0, v2: 0 }, balZ: { x1: 0, v1: 0, x2: 0, v2: 0 }, unWs: 0, stepWs: 0, stepSideHold: 0, unSideHold: 0, unSide: 0, unW: 0, gate: [1, 1], fn: [0, 0], hn: [0, 0], peelGate: 1, reqPeel: [0, 0], fx: [new Float64Array(8), new Float64Array(8)], fz: [new Float64Array(8), new Float64Array(8)],
@@ -218,7 +218,7 @@ export function createEngine(THREE, { vocab } = {}) {
     M.gesture = 0.36; M.gestureHands = 0.42; M.gestureFeet = 0.3; M.drift = 0.55; M.trail = 0.35; M.weightShift = 1;
     M.peelAllowed = 1; M.liftAllowed = 1; M.stepAllowed = 1; M.gazeHands = 0; M.gazeAway = 0; M.loose = 0;
     M.fleshGain = 0.3; M.fleshStiff = 1; M.fleshDamp = 1; M.zetaAdd = 0; M.stiff = 1; M.slowScale = 1; M.fastScale = 1;
-    M.accentDecay = 1; M.holdMul = 1; M.genGain = 1; M.travel = 0.15; M.holdDrift = 1; M.chain = 1; M.pelvisCouple = 0; M.chainTau = 1;
+    M.accentDecay = 1; M.holdMul = 1; M.genGain = 1; M.travel = 0.15; M.holdDrift = 1; M.chain = 1; M.pelvisCouple = 0; M.chainTau = 1; M.rib = 1;
     for (const id of QUALITY_ORDER) {
       const q = Q[id]; if (!q.mod) continue;
       let v = P.lv[id] || 0;
@@ -300,7 +300,7 @@ export function createEngine(THREE, { vocab } = {}) {
     const dvE = clamp(V[ac(0, A.UEL)] - V[ac(1, A.UEL)], -160, 160), dvA = clamp(V[ac(0, A.UAZ)] - V[ac(1, A.UAZ)], -160, 160);
     const vSum = clamp(V[ac(0, A.UEL)] + V[ac(1, A.UEL)], -200, 200);
     for (let i = 3; i <= 6; i++) { T[T3(i, 1)] -= clamp(0.028 * dvE, -4, 4); T[T3(i, 2)] -= clamp(0.03 * dvA, -4, 4); T[T3(i, 0)] -= clamp(0.012 * vSum, -2.5, 2.5); }
-    T[T3(8, 1)] += clamp(0.03 * dvE, -5, 5); T[T3(9, 2)] += clamp(0.025 * dvA, -6, 6); // the head answers, a beat later (softer neck springs)
+    T[T3(8, 1)] -= clamp(0.02 * dvE, -3.5, 3.5); T[T3(9, 2)] += clamp(0.025 * dvA, -6, 6); // the head follows the ribcage, a beat later (softer neck springs)
     for (let s = 0; s < 2; s++) T[ac(s, A.CLA)] += clamp(0.04 * V[ac(s, A.UEL)], -4, 9);
     // never two parallel arms held forward (the mannequin "zombie" look): separate their heights
     {
@@ -451,8 +451,15 @@ export function createEngine(THREE, { vocab } = {}) {
     }
     // the region the weight has to stay over: the contacts now, minus the heel of a foot that is about to peel (its
     // support moves forward onto the ball). The heel only lifts once the COM is already inside that region.
+    // A heel counts as peeling (and leaves the support region) above 1.5 degrees of requested peel and counts again below 0.8.
+    // The heel leaves the floor contact test (8 mm) at about 2 degrees, so the region must already be the ball-only one by then,
+    // and a single threshold made the gate and the peel flip on alternate frames.
     let n = 0;
-    for (let s = 0; s < 2; s++) { const cnt = P.fn[s] - (P.reqPeel[s] > 3 ? P.hn[s] : 0); for (let i = 0; i < cnt; i++) { _ux[n] = P.fx[s][i]; _uz[n] = P.fz[s][i]; n++; } }
+    for (let s = 0; s < 2; s++) {
+      if (P.reqPeel[s] > 1.5) P.peelOn[s] = true; else if (P.reqPeel[s] < 0.8) P.peelOn[s] = false;
+      const cnt = P.fn[s] - (P.peelOn[s] ? P.hn[s] : 0);
+      for (let i = 0; i < cnt; i++) { _ux[n] = P.fx[s][i]; _uz[n] = P.fz[s][i]; n++; }
+    }
     if (n >= 3) P.peelGate = smoothstep(-0.01, 0.006, hullQuery(buildHull(_ux, _uz, n), cx, cz)); else P.peelGate = 1;
     let tx = 0, tz = 0;
     if (n >= 3) {
@@ -523,7 +530,7 @@ export function createEngine(THREE, { vocab } = {}) {
     const w = clamp(P.X[GW], 0, 1) * (1 - 0.7 * M.gazeAway);
     // the gaze target jumps every 1 to 4 s: the angles the head chases are smoothed (two critically damped stages)
     if (!G.init) { G.ya.x1 = G.ya.x2 = yaw; G.pi.x1 = G.pi.x2 = pitch; G.init = true; }
-    const yawS = cd2(G.ya, yaw, 4.2, P.dts), pitS = cd2(G.pi, pitch, 4.2, P.dts);
+    const yawS = cd2(G.ya, yaw, 3.0, P.dts), pitS = cd2(G.pi, pitch, 3.0, P.dts);
     T[T3(7, 2)] += w * yawS * 0.3; T[T3(8, 2)] += w * yawS * 0.3; T[T3(9, 2)] += w * yawS * 0.4;
     // nod mostly at the head, keep the neck long; a level, lifted carriage by default. The head follows the chest
     // (trunkChain); there is no tilt cancellation, a quality that wants an isolated head adds its own counter-rotation.
@@ -591,9 +598,9 @@ export function createEngine(THREE, { vocab } = {}) {
       const f = F[s], o = P.st.feet[s], S = f.step, gate = P.gate[s];
       let peel = (Math.max(0, C[lc(s, L.PEEL)]) * 28 + Math.max(0, C[REL]) * 34) * M.peelAllowed * P.peelGate;
       // a foot only leaves the floor once the weight is over the other foot (gate), and its forward reach only
-      // starts once it is a few mm in the air (no slide on the floor)
+      // starts once it is clear of the floor (no slide on the floor)
       let lift = Math.max(0, C[lc(s, L.LIFT)]) * M.liftAllowed * gate;
-      const fwd = C[lc(s, L.LFWD)] * smoothstep(0.003, 0.02, lift);
+      const fwd = C[lc(s, L.LFWD)] * smoothstep(0.008, 0.03, lift); // the floor-contact test is 8 mm: no forward reach below that
       o.bx = f.bx; o.bz = f.bz; o.yaw = f.yaw;
       if (S.on) {
         // heel up, ball down, weight moving to the other foot; the swing starts only when the foot is unloaded
@@ -750,6 +757,14 @@ export function createEngine(THREE, { vocab } = {}) {
       const d = v * (Q[id].shapeGain || 0); sumD += d; if (d > drive) drive = d;
     }
     P.shapeDrive = clamp(drive + 0.15 * (sumD - drive), 0, 1) * (1 - 0.3 * (P.lv.dolfi || 0));
+    // an accent (or a silly quirk) plays out on a settled pose: while one is in flight the body shape and the arms hold their
+    // postures (a new pick waits until it is over); the explosive and silly generators in turn wait while a posture change is
+    // just starting
+    const ex = P.q.explosive, sl = P.q.silly;
+    if ((ex && ex.ev.some(e => e.on && e.t < 1.3)) || (sl && (P.lv.silly || 0) > 0.05 && sl.ev.some(e => e.on))) {
+      P.shape.t = Math.min(P.shape.t, P.shape.hold - 0.05);
+      for (let s = 0; s < 2; s++) P.arms[s].t = Math.min(P.arms[s].t, P.arms[s].hold - 0.05);
+    }
     updateShapes(P, P.dts / M.holdMul, prefs, false);
     // posture size follows the intensity: low intensity keeps the arms close to the body, overhead needs near full
     const inten = clamp(P.shapeDrive / 0.8, 0, 1);
@@ -862,7 +877,7 @@ export function createEngine(THREE, { vocab } = {}) {
   // debug view for the harness (not part of the contract)
   function debug(performerId) {
     const P = performers.get(performerId); if (!P) return null;
-    return { comD: P.comD, gate: P.gate, com: P.com, balCorr: P.balCorr, fn: P.fn, fx: P.fx, fz: P.fz, crel: P.crel, C: P.C, T: P.T, arms: P.arms.map(a => a.name), zombieHits: P.zombieHits || 0, own: P.shape.own, feet: P.st.feet, plants: P.feet, ballW: P.ballW, heelW: P.heelW, airborne: P.airborne, stepping: P.stepping, shape: P.shape.name, shapeAmt: P.shapeAmt, collide: P.collide, reachDrop: P.reachDrop, lv: P.lv, bias: P.bias, tempo: P.tempo };
+    return { comD: P.comD, gate: P.gate, com: P.com, balCorr: P.balCorr, fn: P.fn, fx: P.fx, fz: P.fz, crel: P.crel, C: P.C, T: P.T, arms: P.arms.map(a => a.name), zombieHits: P.zombieHits || 0, own: P.shape.own, feet: P.st.feet, plants: P.feet, ballW: P.ballW, heelW: P.heelW, airborne: P.airborne, stepping: P.stepping, shape: P.shape.name, shapeAmt: P.shapeAmt, peelGate: P.peelGate, reqPeel: P.reqPeel, collide: P.collide, reachDrop: P.reachDrop, lv: P.lv, bias: P.bias, tempo: P.tempo };
   }
 
   return { addPerformer, removePerformer, setLayer, toggleLayer, releaseAll, getLayers, accent, getActivity, getGlowPoints, getFleshParams, update, on, setThread, debug };

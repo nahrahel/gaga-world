@@ -235,7 +235,7 @@ const STUDY = {
     explore: ['Press the pads at the base of your fingers into the air. What wakes up in your forearms?', 'Roll over the balls of your feet. How do your knees answer?'] },
   biba: { confidence: 'A', lookFor: ['The pelvis settles heavier while the spine grows long above it.', 'The lower back lengthens out of any slump.'],
     explore: ['Can you feel your sit bones and grow away from them?', 'What happens to your breath when the lower back gets longer?'] },
-  lena: { confidence: 'A', lookFor: ['The pelvis moves first.', 'The spine follows a moment later, then the arms. Slow it down to see the delay.'],
+  lena: { confidence: 'A', lookFor: ['The pelvis tips and shifts first.', 'The spine follows a moment later, then the arms. Slow it down to see the delay.', 'The knees swivel with the hips while the feet stay planted.'],
     explore: ['Put a hand on your low belly. Can a movement start under your hand?', 'How late can your arms arrive?'] },
   snake: { confidence: 'A', lookFor: ['A wave climbs the spine one segment at a time.', 'Watch from the side or the back at half speed.'],
     explore: ['Start a wave at the tailbone. How far up can you follow it?', 'Can it travel the other way, from the head down?'] },
@@ -259,7 +259,7 @@ const STUDY = {
     explore: ['Find a pulse in your knees without music. Is it yours?'] },
   silly: { confidence: 'A', lookFor: ['Lopsided surprises: shoulder giggles, head bobs, hip rolls.'],
     explore: ['What is the strangest small movement you can find right now?', 'Can you laugh and keep moving?'] },
-  explosive: { confidence: 'A', lookFor: ['A burst lands in a fraction of a second with no wind-up, then softens over about a second.'],
+  explosive: { confidence: 'A', lookFor: ['A burst lands in a fraction of a second with no wind-up, then softens over about a second.', 'A kick comes from the foot that carries no weight.'],
     explore: ['Stay delicate, then burst without preparing. How fast can you return to delicate?'] },
   collapse: { confidence: 'A', lookFor: ['One region drops for an instant, then gets carried back up.'],
     explore: ['Let your chest fall for a moment. What catches it?'] },
@@ -299,7 +299,7 @@ export const GAGA_VS_CLASS = [
 // "Show me" presets: the camera angle, speed and overlays that make each word's detail easiest to see.
 const SHOW = {
   float: { view: 'three', speed: 1, trails: true }, lunas: { view: 'hands', speed: 0.5 }, biba: { view: 'side', speed: 1 },
-  lena: { view: 'side', speed: 0.5, map: true }, snake: { view: 'back', speed: 0.5 }, flesh: { view: 'three', speed: 0.25 },
+  lena: { view: 'three', speed: 0.5, map: true }, snake: { view: 'back', speed: 0.5 }, flesh: { view: 'three', speed: 0.25 },
   balls: { view: 'front', speed: 0.5, map: true }, curves: { view: 'three', speed: 1, trails: true }, shake: { view: 'front', speed: 0.25 },
   quake: { view: 'feet', speed: 0.5 }, boil: { view: 'three', speed: 0.5 }, thick: { view: 'three', speed: 1 },
   time: { view: 'side', speed: 1, trails: true }, groove: { view: 'side', speed: 1 }, silly: { view: 'front', speed: 1 },
