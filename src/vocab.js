@@ -5,7 +5,7 @@
 export const VOCAB = [
   { id: 'float', word: 'Float', tier: 1, region: 'whole', kind: 'generator', key: '1',
     gloss: 'Buoyant, light, never collapsed',
-    meaning: 'The home state of every class. You sense your weight, but gravity does not decide your shape. Joints stay soft, the arms lift a little off the ribs, and the body keeps drifting. Each new layer starts from float, and the class comes back to it to reset.',
+    meaning: 'The home state of every class. You sense your weight, but gravity does not decide your shape. Joints stay soft, the arms lift a little off the ribs, and the body keeps drifting. Most classes open with float, and teachers sometimes return to it to reset before a new layer.',
     cue: 'Float. You are in water, and your bones float inside your flesh.',
     sensation: 'The whole body, a light lift against gravity',
     bodyMap: ['spine', 'hands'] },
@@ -168,6 +168,7 @@ export const GAGA_NOTES = {
     'Cues stack. You keep what you have and add the next thing.',
     'Connect to pleasure, especially during effort.',
     'Silliness is welcome. So is laughing at yourself.',
+    'Tasks are specific and the words are shared. You may copy the teacher (kagami). Your answer is still yours.',
     'Nobody watches from the side. Everyone in the room moves.',
   ],
 };
@@ -244,7 +245,7 @@ const STUDY = {
     explore: ['Imagine a ball in your palm. Where does it roll next?', 'Make the ball bigger or heavier. What changes in you?'] },
   curves: { confidence: 'B', lookFor: ['Arms, pelvis and wrists trace circles at once, each at its own pace.'],
     explore: ['Draw a circle with one shoulder. Add a second circle somewhere else.', 'Can the two circles keep different speeds?'] },
-  shake: { confidence: 'A', lookFor: ['It starts small in the torso and spreads over about half a minute.', 'The knees pump, the arms and flesh go loose.'],
+  shake: { confidence: 'A', lookFor: ['It starts small in the torso and spreads. Here it takes about half a minute; in a class it can build over several minutes.', 'The knees pump, the arms and flesh go loose.'],
     explore: ['Start at one point. Can it stay small for a whole minute before it spreads?', 'Where are you holding tension that the shake could release?'] },
   quake: { confidence: 'A', lookFor: ['Jolts start at the feet and travel up the body.', 'It is more irregular than Shake.'],
     explore: ['Imagine the floor moving. Can you let it happen instead of doing it?'] },

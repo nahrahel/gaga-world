@@ -99,7 +99,7 @@ soloist.object3d.position.copy(studio.soloistSpot);
 scene.add(soloist.object3d);
 const participant = makeFigure(0.05);
 participant.object3d.position.copy(studio.participantSpot);
-participant.object3d.rotation.y = -0.5;
+{ const toSolo = new THREE.Vector3().subVectors(studio.soloistSpot, studio.participantSpot); participant.object3d.rotation.y = Math.atan2(toSolo.x, toSolo.z) - 0.5; } // as main.js
 participant.object3d.visible = MODE === 'join';
 scene.add(participant.object3d);
 
@@ -134,8 +134,18 @@ if (P.get('focus')) cams.focus(P.get('focus'));
 const trails = createTrails(THREE, { scene, figure: soloist });
 trails.setEnabled(P.get('trails') === '1');
 if (P.get('tw')) trails.setStyle({ width: Number(P.get('tw')), opacity: 1 });
-window.__dbg = { trails, scene, soloist, renderer, camera, post };
+window.__dbg = { trails, scene, soloist, participant, renderer, camera, post, cams };
 cams.on('study', (v) => console.warn('[study]', v));
+// simulated UI: ?insets=top,right,bottom,left (CSS px) draws panels there and tells the rig (unless applyInsets=0)
+if (P.get('insets')) {
+  const [t, r, b, l] = P.get('insets').split(',').map(Number);
+  const panel = (css) => { const d = document.createElement('div'); d.style.cssText = 'position:fixed;background:rgba(236,236,233,0.9);border:1px solid rgba(0,0,0,0.12);pointer-events:none;z-index:5;' + css; document.body.appendChild(d); };
+  if (t) panel(`left:0;right:0;top:0;height:${t}px`);
+  if (r) panel(`right:0;top:${t}px;bottom:${b}px;width:${r}px`);
+  if (b) panel(`left:0;right:0;bottom:0;height:${b}px`);
+  if (l) panel(`left:0;top:${t}px;bottom:${b}px;width:${l}px`);
+  if (P.get('applyInsets') !== '0' && cams.setInsets) cams.setInsets({ top: t, right: r, bottom: b, left: l });
+}
 for (const n of (P.get('off') || '').split(',')) if (post.passes[n]) post.passes[n].enabled = false;
 if (P.get('exp')) post.setGrade({ exposure: Number(P.get('exp')) });
 if (P.get('debug') === 'fog') post.passes.shafts.debug = true;

@@ -19,14 +19,15 @@ const SHOTS = {
   wide: { bone: 'spine03', d: [6.4, 5.3], h: [1.5, 1.38], fov: [40, 38], hold: [9, 12], drift: 0.16, follow: 0.6, anchor: 2.0 },
   wideOut: { bone: 'spine03', d: [4.6, 6.0], h: [1.25, 1.55], fov: [38, 40], hold: [9, 12], drift: -0.12, follow: 0.6, anchor: 2.0 },
   full: { bone: 'spine02', d: [3.7, 3.3], h: [1.0, 1.18], fov: [34, 33], hold: [7, 10], drift: 0.1, follow: 0.45, anchor: 1.4 },
-  pelvis: { bone: 'pelvis', d: [2.0, 1.72], h: [0.95, 1.02], fov: [30, 29], hold: [6, 9], drift: 0.08, follow: 0.3, anchor: 1.0, look: [0, 0.02, 0] },
-  hand: { bone: 'hand', d: [0.98, 0.82], h: [0.1, 0.06], rel: true, fov: [29, 28], hold: [6, 8], drift: 0.1, follow: 0.16, anchor: 0.55, dof: 0.8 },
-  spineBack: { bone: 'spine04', d: [1.95, 1.65], h: [1.42, 1.32], fov: [32, 31], hold: [7, 10], drift: 0.06, follow: 0.35, anchor: 1.1, rel: false, facing: 'back' },
-  spineProfile: { bone: 'spine04', d: [2.1, 1.85], h: [1.36, 1.3], fov: [32, 31], hold: [7, 10], drift: 0.06, follow: 0.35, anchor: 1.1, facing: 'side' },
+  // 'pelvis' frames torso and thighs from a front three-quarter, centred at the waist (never on the groin or from behind)
+  pelvis: { bone: 'spine02', d: [2.75, 2.4], h: [1.32, 1.24], fov: [34, 33], hold: [6, 9], drift: 0.08, follow: 0.35, anchor: 1.1, look: [0, -0.02, 0], facing: 'three' },
+  hand: { bone: 'hand', d: [1.85, 1.6], h: [0.12, 0.08], rel: true, fov: [32, 31], hold: [6, 8], drift: 0.1, follow: 0.22, anchor: 0.7, dof: 0.5, toward: ['spine05', 0.35] },
+  spineBack: { bone: 'spine05', d: [2.35, 2.05], h: [1.55, 1.48], fov: [33, 32], hold: [7, 10], drift: 0.06, follow: 0.35, anchor: 1.1, look: [0, 0.03, 0], facing: 'backThree' },
+  spineProfile: { bone: 'spine05', d: [2.3, 2.05], h: [1.45, 1.4], fov: [33, 32], hold: [7, 10], drift: 0.06, follow: 0.35, anchor: 1.1, look: [0, 0.03, 0], facing: 'side' },
   feet: { bone: 'feet', d: [1.75, 1.45], h: [0.26, 0.3], fov: [36, 35], hold: [6, 9], drift: 0.1, follow: 0.3, anchor: 1.0, look: [0, 0.14, 0], dof: 0.6 },
-  flesh: { bone: 'spine04', d: [2.4, 2.2], h: [1.46, 1.42], fov: [33, 32], hold: [6, 9], drift: 0.05, follow: 0.4, anchor: 1.2, handheld: 1 },
+  flesh: { bone: 'spine05', d: [2.6, 2.35], h: [1.48, 1.44], fov: [34, 33], hold: [6, 9], drift: 0.05, follow: 0.4, anchor: 1.2, handheld: 1 },
   arms: { bone: 'spine05', d: [2.9, 2.55], h: [1.52, 1.46], fov: [36, 35], hold: [7, 10], drift: 0.1, follow: 0.4, anchor: 1.2 },
-  head: { bone: 'head', d: [1.45, 1.25], h: [0.06, 0.04], rel: true, fov: [28, 27], hold: [6, 8], drift: 0.07, follow: 0.25, anchor: 0.9, look: [0, 0.04, 0], dof: 0.6 },
+  head: { bone: 'head', d: [1.9, 1.7], h: [0.05, 0.02], rel: true, fov: [30, 29], hold: [6, 8], drift: 0.07, follow: 0.25, anchor: 0.9, look: [0, -0.12, 0], dof: 0.4 },
 };
 // Study views (training layer). az: degrees around the soloist relative to their facing (0 front, +90 their left,
 // -90 their right, which is the sunlit side when they face the room). y: absolute camera height, or rel: height above
@@ -38,8 +39,10 @@ const STUDY = {
   three: { label: 'Three quarter', bone: 'spine03', az: -40, alt: 40, dist: 3.5, y: 1.45, fov: 36 },
   hands: { label: 'Hands', bone: 'hand_R', az: -35, alt: 30, dist: 0.95, rel: 0.12, fov: 30, close: true, dof: 1, follow: 0.16 },
   feet: { label: 'Feet', bone: 'feet', az: -25, alt: 25, dist: 1.45, y: 0.32, fov: 32, close: true, dof: 1, look: [0, 0.07, 0], follow: 0.25 },
-  spine: { label: 'Spine', bone: 'spine04', az: 160, alt: -160, dist: 1.9, y: 1.38, fov: 34, follow: 0.3 },
-  pelvis: { label: 'Pelvis', bone: 'pelvis', az: -30, alt: 30, dist: 2.0, y: 1.0, fov: 32, follow: 0.3 },
+  // spine: back three-quarter from the sunlit side, sacrum to head in frame
+  spine: { label: 'Spine', bone: 'spine05', az: -140, alt: 140, dist: 1.9, y: 1.58, fov: 34, look: [0, 0.02, 0], follow: 0.3 },
+  // pelvis: front three-quarter from slightly above hip height, whole torso and thighs, centred at the waist
+  pelvis: { label: 'Pelvis', bone: 'spine02', az: -40, alt: 40, dist: 2.8, y: 1.3, fov: 34, look: [0, -0.03, 0], follow: 0.3 },
   overhead: { label: 'Overhead', bone: 'pelvis', az: 0, alt: 180, dist: 1.1, y: 4.3, fov: 50 },
 };
 const DEG = Math.PI / 180;
@@ -283,34 +286,66 @@ export function createCameraRig(THREE, { camera, dom, studio } = {}) {
   }
 
   // ---- join: first person from the participant's head --------------------
-  const join = { pos: new V3(), quat: new Q(), init: false };
+  const join = { pos: new V3(), quat: new Q(), init: false, yaw: 0, pitch: 0 };
   const FLIP = new Q().setFromAxisAngle(new V3(0, 1, 0), Math.PI), FLIP_INV = FLIP.clone().invert();
   const ID = new Q();
+  const JOIN = { headFollow: 0.15, toBody: 0.42, pitch: -12 * DEG, fov: 62 };
+  const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
   function joinPose(dt) {
     const eye = _v, delta = _q.identity();
     const head = participant && participant.byName && participant.byName.head;
+    let bodyYaw = null;
     if (head) {
       head.updateWorldMatrix(true, false);
       const hq = new Q(); head.getWorldQuaternion(hq);
-      eye.set(0, 0.085, 0.125).applyQuaternion(hq).add(head.getWorldPosition(_v2));
+      eye.set(0, 0.09, 0.06).applyQuaternion(hq).add(head.getWorldPosition(_v2));
       const base = new Q();
       if (participant.object3d) participant.object3d.getWorldQuaternion(base);
+      const fw = new V3(0, 0, 1).applyQuaternion(base);
+      bodyYaw = Math.atan2(-fw.x, -fw.z);
       const rel = base.invert().multiply(hq);                 // head motion in the body frame
       const relCam = FLIP_INV.clone().multiply(rel).multiply(FLIP); // same motion in camera axes
-      delta.copy(ID).slerp(relCam, 0.35);
+      delta.copy(ID).slerp(relCam, JOIN.headFollow);
     } else {
       const p = studio.participantSpot || spot;
-      eye.set(p.x + Math.sin(time * 0.7) * 0.03, EYE + Math.sin(time * 1.3) * 0.015, p.z + Math.sin(time * 0.5) * 0.03);
-      delta.setFromEuler(_e.set(Math.sin(time * 0.6) * 0.03, Math.sin(time * 0.4) * 0.05, Math.sin(time * 0.5) * 0.02, 'YXZ'));
+      eye.set(p.x + Math.sin(time * 0.7) * 0.03, EYE + 0.05 + Math.sin(time * 1.3) * 0.015, p.z + Math.sin(time * 0.5) * 0.03);
+      delta.setFromEuler(_e.set(Math.sin(time * 0.6) * 0.02, Math.sin(time * 0.4) * 0.03, Math.sin(time * 0.5) * 0.015, 'YXZ'));
     }
-    const tgt = bonePos('spine05', new V3());
-    tgt.y = tgt.y * 0.75 + bonePos('head', _v2).y * 0.25;
-    const stable = lookQuat(eye, tgt, new Q());
+    // aim: keep the soloist inside the central two thirds (head in frame) and, when your hands are in front of
+    // you, lean the view toward them so they sit in the lower part of the frame. Aim angles are smoothed.
+    const dirTo = (pt) => { const dx = pt.x - eye.x, dz = pt.z - eye.z, h = Math.hypot(dx, dz) || 1e-3; return { yaw: Math.atan2(-dx, -dz), pitch: Math.atan2(pt.y - eye.y, h), h }; };
+    const tgt = bonePos('spine02', new V3());
+    tgt.y = tgt.y * 0.6 + bonePos('head', _v2).y * 0.4;
+    const S = dirTo(tgt), Hd = dirTo(bonePos('head', _v2).add(_v4.set(0, 0.12, 0)));
+    const halfV = (JOIN.fov / 2) * DEG, aspect = camera.aspect || 1.6;
+    const halfH = Math.atan(Math.tan(halfV) * aspect);
+    const maxOff = Math.max(0.05, Math.atan(Math.tan(halfH) * 0.62) - Math.atan2(0.3, S.h)); // central two thirds
+    let yawOff = bodyYaw === null ? 0.18 : angDiff(bodyYaw, S.yaw) * JOIN.toBody;
+    let pitch = S.pitch + JOIN.pitch;
+    const bn = participant && participant.byName;
+    if (bn && bn.middle01_L && bn.middle01_R && bodyYaw !== null) {
+      const hm = bn.middle01_L.getWorldPosition(new V3()).add(bn.middle01_R.getWorldPosition(_v3)).multiplyScalar(0.5);
+      const fwd = new V3(-Math.sin(bodyYaw), 0, -Math.cos(bodyYaw));
+      const ahead = (hm.x - eye.x) * fwd.x + (hm.z - eye.z) * fwd.z;
+      if (ahead > 0.12) {
+        const Hn = dirTo(hm);
+        yawOff = angDiff(Hn.yaw, S.yaw) * 0.6;
+        pitch = Math.min(pitch, Hn.pitch + halfV * 0.6);
+      }
+    }
+    yawOff = Math.max(-maxOff, Math.min(maxOff, yawOff));
+    pitch = Math.max(pitch, Hd.pitch - halfV * 0.86, S.pitch - halfV * 0.6);
+    pitch = Math.min(pitch, S.pitch);
+    const aimYaw = S.yaw + yawOff;
+    if (!join.init) { join.yaw = aimYaw; join.pitch = pitch; }
+    join.yaw += angDiff(aimYaw, join.yaw) * damp(dt, 0.45);
+    join.pitch += (pitch - join.pitch) * damp(dt, 0.45);
+    const stable = new Q().setFromEuler(_e.set(join.pitch, join.yaw, 0, 'YXZ'));
     const desired = stable.multiply(delta);
     if (!join.init) { join.pos.copy(eye); join.quat.copy(desired); join.init = true; }
     join.pos.lerp(eye, damp(dt, 0.06));
-    join.quat.slerp(desired, damp(dt, 0.12));
-    want.pos.copy(join.pos); want.quat.copy(join.quat); want.fov = baseFov + 12;
+    join.quat.slerp(desired, damp(dt, 0.14));
+    want.pos.copy(join.pos); want.quat.copy(join.quat); want.fov = JOIN.fov;
   }
 
   // ---- director -----------------------------------------------------------
@@ -363,7 +398,13 @@ export function createCameraRig(THREE, { camera, dom, studio } = {}) {
     let cands = [];
     if (base.facing) {
       const f = facingAz();
-      const opts = base.facing === 'back' ? [f + Math.PI, f + Math.PI * 0.8, f - Math.PI * 0.8] : [f + Math.PI / 2, f - Math.PI / 2, f + Math.PI * 0.6, f - Math.PI * 0.6];
+      const FAC = {
+        back: [f + Math.PI, f + Math.PI * 0.8, f - Math.PI * 0.8],
+        backThree: [f + Math.PI * 0.78, f - Math.PI * 0.78, f + Math.PI * 0.7, f - Math.PI * 0.7],
+        side: [f + Math.PI / 2, f - Math.PI / 2, f + Math.PI * 0.6, f - Math.PI * 0.6],
+        three: [f + Math.PI * 0.25, f - Math.PI * 0.25, f + Math.PI * 0.33, f - Math.PI * 0.33],
+      };
+      const opts = FAC[base.facing] || FAC.side;
       cands = opts.map((a) => a + rnd(-0.08, 0.08));
     } else {
       for (let i = 0; i < 14; i++) cands.push(-1.9 + (3.8 * i) / 13 + rnd(-0.1, 0.1));
@@ -418,6 +459,7 @@ export function createCameraRig(THREE, { camera, dom, studio } = {}) {
     if (!sh.rel) p.y = sh.h[0] + (sh.h[1] - sh.h[0]) * ease(s);
     const lookAt = new V3().copy(dir.subj);
     if (sh.look) lookAt.add(_v.set(sh.look[0], sh.look[1], sh.look[2]));
+    if (sh.toward) lookAt.lerp(bonePos(sh.toward[0], _v), sh.toward[1]); // keep the head and chest in the frame
     const hh = (sh.handheld || 0.12);
     const tt = time + dir.seed;
     p.x += hh * 0.012 * (Math.sin(tt * 1.13) + 0.5 * Math.sin(tt * 2.71));
@@ -460,6 +502,27 @@ export function createCameraRig(THREE, { camera, dom, studio } = {}) {
     emit('mode', m);
   }
 
+  // ---- UI insets (CSS px). The projection is shifted and scaled so the intended frame fits the visible area.
+  const insets = { want: { top: 0, right: 0, bottom: 0, left: 0 }, cur: { top: 0, right: 0, bottom: 0, left: 0 } };
+  function setInsets(o = {}) {
+    for (const k of ['top', 'right', 'bottom', 'left']) insets.want[k] = Math.max(0, Number(o[k]) || 0);
+  }
+  function applyInsets(dt) {
+    const c = insets.cur, w = insets.want, k = damp(dt, 0.28);
+    let sum = 0;
+    for (const key of ['top', 'right', 'bottom', 'left']) {
+      c[key] += (w[key] - c[key]) * k;
+      if (Math.abs(w[key] - c[key]) < 0.25) c[key] = w[key];
+      sum += c[key];
+    }
+    const W = dom.clientWidth || window.innerWidth, H = dom.clientHeight || window.innerHeight;
+    if (sum < 0.5 || !W || !H) { if (camera.view && camera.view.enabled) camera.clearViewOffset(); return; }
+    const vw = Math.max(W * 0.2, W - c.left - c.right), vh = Math.max(H * 0.15, H - c.top - c.bottom);
+    const cx = Math.min(W, c.left + vw / 2), cy = Math.min(H, c.top + vh / 2);
+    const sc = Math.min(1, vw / W, vh / H);
+    camera.setViewOffset(W * sc, H * sc, -(cx - (W * sc) / 2), -(cy - (H * sc) / 2), W, H);
+  }
+
   function update(dt, ctx = {}) {
     dt = Math.max(0, Math.min(dt || 0, 0.1));
     time += dt;
@@ -484,6 +547,7 @@ export function createCameraRig(THREE, { camera, dom, studio } = {}) {
     camera.position.copy(out.pos);
     camera.quaternion.copy(out.quat);
     if (Math.abs(camera.fov - out.fov) > 1e-3) { camera.fov = out.fov; camera.updateProjectionMatrix(); }
+    applyInsets(dt);
     camera.updateMatrixWorld();
     // shallow-focus hint for post.js: close study views and director close-ups
     let dw = 0, fd = 3;
@@ -500,6 +564,8 @@ export function createCameraRig(THREE, { camera, dom, studio } = {}) {
     cycle() { setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length]); },
     update,
     study,
+    setInsets,
+    get insets() { return { ...insets.want }; },
     studyViews: Object.entries(STUDY).map(([id, v]) => ({ id, label: v.label })),
     get studying() { return studyState ? studyState.id : null; },
     focus(boneName) {

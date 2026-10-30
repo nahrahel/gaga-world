@@ -54,11 +54,13 @@ const fig = await createFigure(THREE, { material: Q.get('mat') || 'charcoal' });
 scene.add(fig.object3d);
 if (Q.get('head') === '0') fig.setHeadVisible(false);
 if (Q.get('gain')) fig.setFlesh({ gain: +Q.get('gain') });
-if (Q.get('glow')) fig.setGlow([
-  { bone: 'pelvis', offset: [0, 0.04, 0.03], radius: 0.09, intensity: 1 },
-  { bone: 'hand_L', offset: [0.05, -0.06, -0.015], radius: 0.035, intensity: 0.9 },
-  { bone: 'spine04', offset: [0, 0, -0.05], radius: 0.08, intensity: 0.6 },
-]);
+const GLOWS = { // the engine's own point recipes (src/motion/qualities.js)
+  lena: [{ bone: 'pelvis', offset: [0, 0.03, 0.04], radius: 0.094, intensity: 0.8 }],
+  head: [{ bone: 'head', offset: [0, 0.08, 0.02], radius: 0.09, intensity: 0.7 }, { bone: 'clavicle_L', offset: [0.12, 0, 0], radius: 0.05, intensity: 0.4 }, { bone: 'clavicle_R', offset: [-0.12, 0, 0], radius: 0.05, intensity: 0.4 }],
+  mix: [{ bone: 'pelvis', offset: [0, 0.03, 0.04], radius: 0.08, intensity: 0.6 }, { bone: 'hand_L', offset: [0.03, -0.04, 0], radius: 0.08, intensity: 0.6 }, { bone: 'spine04', offset: [0, 0, 0.06], radius: 0.18, intensity: 0.5 }],
+};
+if (Q.get('glow')) fig.setGlow(GLOWS[Q.get('glow')] || GLOWS.mix);
+if (Q.get('wear') === '0') fig.setDancewear(false);
 
 // debug attribute views
 const geo = fig.mesh.geometry;

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion lab</title>
+<style>
+  :root { --bg: #fbfbfa; --ink: #1d1d1b; --muted: #6b6a64; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 ui-monospace, Menlo, monospace; }
+  body { padding: 16px; }
+  canvas { display: block; max-width: 100%; height: auto; margin: 12px 0; }
+  pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); }
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="status">loading</div>
+<canvas id="plot"></canvas>
+<pre id="out"></pre>
+<script type="module">
+// Motion lab (dev instrument). Runs the motion engine on a bone-only rig at a fixed dt, records world transforms of
+// the trunk, limbs and foot contact points, and computes engine-agnostic metrics (dev/lab/metrics.js).
+// Driven by dev/motion-lab.mjs through window.runScenario(spec); open by hand with ?run=snake:0.8 to see one scenario.
+// spec = { name, seed=7, warmup=8, duration=30, layers: {id: v}, events: [{ t, set: {id: v} } | { t, accent: id } | { t, releaseAll: true }],
+//          dtSeq: 'edge' (variable dt sequence) | undefined, ablate: [qualityId] (that quality's generator switched off) }
+import * as THREE from 'three';
+import { createEngine } from '../src/motion/engine.js';
+import { buildSkeleton, BONES, BONE_BY_NAME, BONE_INDEX, LANDMARKS } from '../src/skeleton.js';
+import { VOCAB } from '../src/vocab.js';
+import { TRACK, POINTS, computeMetrics } from './lab/metrics.js';
+import { renderKymo, renderLegs } from './lab/plots.js';
+
+let Q = null; // optional: quality table, for generator ablations (absent in a rebuilt engine = ablations skipped)
+try { Q = (await import('../src/motion/qualities.js')).Q || null; } catch (e) { Q = null; }
+
+const NB = TRACK.length, NP = POINTS.length;
+const TI = TRACK.map(n => BONE_INDEX[n]);
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+// contact points: bone + bone-local offset (rest rotations are identity, so rest offsets are bone-local)
+const toesB = (s) => BONE_BY_NAME['toes' + s];
+const PDEF = [
+  ['foot_L', LANDMARKS.heel_L.offset], ['foot_R', LANDMARKS.heel_R.offset],
+  ['toes_L', LANDMARKS.football_L.offset], ['toes_R', LANDMARKS.football_R.offset],
+  ['toes_L', [...sub(toesB('_L').tail, toesB('_L').head).map((v, i) => v + [0, -0.012, 0][i])]],
+  ['toes_R', [...sub(toesB('_R').tail, toesB('_R').head).map((v, i) => v + [0, -0.012, 0][i])]],
+];
+// centre of mass: segment points along head -> tail with rough mass fractions (Winter), summing to 1
+const SEGM = [['head', 0.069, 0.5], ['neck01', 0.006, 0.5], ['neck02', 0.006, 0.5], ['pelvis', 0.142, 0.4],
+  ['spine01', 0.0463, 0.5], ['spine02', 0.0463, 0.5], ['spine03', 0.0464, 0.5], ['spine04', 0.072, 0.5], ['spine05', 0.072, 0.5], ['spine06', 0.072, 0.5],
+  ...['_L', '_R'].flatMap(s => [['upperarm' + s, 0.028, 0.436], ['forearm' + s, 0.016, 0.43], ['hand' + s, 0.006, 0.8], ['thigh' + s, 0.1, 0.433], ['shin' + s, 0.0465, 0.433], ['foot' + s, 0.0145, 0.45]])];
+
+function makeRig() {
+  const sk = buildSkeleton(THREE);
+  const g = new THREE.Group(); g.add(sk.root);
+  return { object3d: g, bones: sk.bones, byName: sk.byName, setFlesh() {}, setGlow() {}, update() {}, setHeadVisible() {} };
+}
+
+// rest heights of the contact points
+const restPts = (() => {
+  const r = makeRig(); r.object3d.updateMatrixWorld(true); const v = new THREE.Vector3(), out = new Float64Array(NP * 3);
+  PDEF.forEach(([b, off], i) => { v.set(...off); r.byName[b].localToWorld(v); out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z; });
+  return out;
+})();
+
+function dtSequence(spec) {
+  const total = (spec.warmup ?? 8) + (spec.duration ?? 30);
+  if (spec.dtSeq !== 'edge') return { seq: null, total };
+  const seq = [], seg = {}; let t = 0;
+  const push = (dt, n) => { for (let i = 0; i < n; i++) { seq.push(dt); t += Math.min(dt, 1 / 20); } };
+  push(1 / 60, 360); seg.steady0 = 1; seg.pause = t;
+  push(0, 60); push(1e-5, 60); seg.resume = t;
+  push(1 / 60, 240); seg.irr0 = t;
+  const cyc = [1 / 30, 1 / 240, 1 / 20, 1 / 60, 1 / 144]; let i = 0; while (t < seg.irr0 + 4) push(cyc[i++ % cyc.length], 1);
+  seg.irr1 = t; push(1 / 60, 120); seg.big = t; push(0.5, 1); push(1 / 60, 180);
+  return { seq, seg, total: t };
+}
+
+const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _v = new THREE.Vector3();
+function runScenario(spec) {
+  spec = { seed: 7, warmup: 8, duration: 30, layers: {}, events: [], ...spec };
+  const saved = [];
+  if (spec.ablate && Q) for (const id of spec.ablate) if (Q[id]) { saved.push([id, Q[id].gen]); Q[id].gen = null; }
+  try {
+    const eng = createEngine(THREE, { vocab: VOCAB });
+    const fig = makeRig();
+    const id = eng.addPerformer(fig, { seed: spec.seed, role: 'soloist', variation: 0.5 });
+    for (const [k, v] of Object.entries(spec.layers)) eng.setLayer(k, v);
+    const evs = spec.events.slice().sort((a, b) => a.t - b.t);
+    const { seq, seg, total } = dtSequence(spec);
+    const t0 = spec.dtSeq === 'edge' ? 0 : spec.warmup;
+    const nFrames = seq ? seq.length : Math.round(total * 60);
+    const cap = nFrames + 2;
+    const rec = { NB, NP, N: 0, t: new Float64Array(cap), dtIn: new Float64Array(cap), qL: new Float64Array(cap * NB * 4), qW: new Float64Array(cap * NB * 4),
+      p: new Float64Array(cap * NB * 3), pts: new Float64Array(cap * NP * 3), com: new Float64Array(cap * 3), restPts,
+      axes: TI.map(i => BONES[i].axes), limits: TI.map(i => BONES[i].limits), nan: 0, events: [], segments: seg || null,
+      dbg: eng.debug ? { switches: [], names: [], lat: Array.from({ length: 10 }, () => []) } : null };
+    let simT = 0, ei = 0, lastShape = null, lastArms = null, hash = 0;
+    for (let f = 0; f < nFrames; f++) {
+      while (ei < evs.length && evs[ei].t <= simT + 1e-9) {
+        const e = evs[ei++];
+        if (e.set) for (const [k, v] of Object.entries(e.set)) eng.setLayer(k, v);
+        if (e.accent) eng.accent(e.accent);
+        if (e.releaseAll) eng.releaseAll();
+        rec.events.push({ t: simT, label: e.label || (e.accent ? '!' + e.accent : e.releaseAll ? 'releaseAll' : Object.entries(e.set).map(([k, v]) => `${k}:${v}`).join(',')) });
+      }
+      const dtIn = seq ? seq[f] : 1 / 60, dt = Math.min(Math.max(dtIn, 0), 1 / 20);
+      eng.update(dtIn, simT); simT += dt;
+      if (simT < t0 - 1e-9) continue;
+      const k = rec.N++; rec.t[k] = simT; rec.dtIn[k] = dtIn;
+      fig.object3d.updateMatrixWorld(true);
+      for (let b = 0; b < NB; b++) {
+        const bone = fig.bones[TI[b]], ql = bone.quaternion;
+        rec.qL.set([ql.x, ql.y, ql.z, ql.w], (k * NB + b) * 4);
+        bone.matrixWorld.decompose(_p, _q, _s);
+        rec.qW.set([_q.x, _q.y, _q.z, _q.w], (k * NB + b) * 4); rec.p.set([_p.x, _p.y, _p.z], (k * NB + b) * 3);
+        if (!isFinite(ql.x + ql.y + ql.z + ql.w + _p.x + _p.y + _p.z)) rec.nan++;
+        hash = (hash + ql.x * (b + 1) * 31 + ql.w * 7 + _p.y * 13) % 1e6;
+      }
+      PDEF.forEach(([bn, off], i) => { _v.set(...off); fig.byName[bn].localToWorld(_v); rec.pts.set([_v.x, _v.y, _v.z], (k * NP + i) * 3); });
+      let cx = 0, cy = 0, cz = 0;
+      for (const [bn, m, fr] of SEGM) {
+        const B = BONE_BY_NAME[bn], o = fig.byName[bn]; _v.set((B.tail[0] - B.head[0]) * fr, (B.tail[1] - B.head[1]) * fr, (B.tail[2] - B.head[2]) * fr); o.localToWorld(_v);
+        cx += _v.x * m; cy += _v.y * m; cz += _v.z * m;
+      }
+      rec.com.set([cx, cy, cz], k * 3);
+      if (rec.dbg) {
+        const d = eng.debug(id);
+        if (d) {
+          if (lastShape !== null && d.shape !== lastShape) rec.dbg.switches.push({ t: simT, kind: 'body', from: lastShape, to: d.shape });
+          const an = d.arms ? d.arms.join('|') : '';
+          if (lastArms !== null && an !== lastArms) rec.dbg.switches.push({ t: simT, kind: 'arm', to: an });
+          lastShape = d.shape; lastArms = an;
+          if (k % 30 === 0) rec.dbg.names.push(d.shape + '|' + an);
+          if (d.C && d.C.length > 30) for (let i = 0; i < 10; i++) rec.dbg.lat[i].push(d.C[3 * i + 1]);
+        }
+      }
+    }
+    rec.hash = +hash.toFixed(6);
+    const res = computeMetrics(rec, spec);
+    res.spec = spec;
+    if (rec.dbg && rec.dbg.lat[0].length !== res._plot.t.length) res._plot.dbgLat = null;
+    window.__lastRec = rec;
+    window.__results[spec.name] = res;
+    return res;
+  } finally { for (const [id, g] of saved) Q[id].gen = g; }
+}
+
+window.__results = {};
+window.runScenario = (spec) => { const r = runScenario(spec); const { _plot, ...rest } = r; return JSON.parse(JSON.stringify(rest)); };
+window.renderPlot = (name, kind, opts = {}) => {
+  const r = window.__results[name]; if (!r) return null;
+  const cv = document.getElementById('plot');
+  return kind === 'kymo' ? renderKymo(cv, r, opts) : renderLegs(cv, r, opts);
+};
+window.labInfo = { tracked: TRACK, points: POINTS, ablation: !!Q, vocab: VOCAB.map(v => ({ id: v.id, tier: v.tier, kind: v.kind })) };
+window.__labReady = true;
+document.getElementById('status').textContent = 'ready: window.runScenario(spec)';
+
+// manual use: ?run=snake:0.8,float:0.5&plot=kymo|legs
+const P = new URLSearchParams(location.search);
+if (P.has('run')) {
+  const layers = Object.fromEntries(P.get('run').split(',').filter(Boolean).map(s => { const [k, v] = s.split(':'); return [k, v === undefined ? 0.7 : +v]; }));
+  const r = window.runScenario({ name: 'manual', layers, duration: +(P.get('dur') || 30) });
+  window.renderPlot('manual', P.get('plot') || 'kymo');
+  document.getElementById('out').textContent = JSON.stringify(r, null, 1);
+}
+</script>
+</body>
+</html>

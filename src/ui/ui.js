@@ -18,6 +18,9 @@ const REGION_ORDER = ['center', 'pelvis', 'spine', 'extremities', 'flesh', 'text
 const REGION_LABEL = { center: 'Center', pelvis: 'Pelvis', spine: 'Spine', extremities: 'Hands and feet', flesh: 'Flesh', texture: 'Texture', whole: 'Whole body' };
 const KIND_LABEL = { generator: 'Movement', modifier: 'Quality', accent: 'Accent' };
 const LANDMARK_LABEL = { lena: 'Lena, low in the belly', biba: 'the sit bones and pelvis', luna: 'the pads of the hands and feet', spine: 'the spine', flesh: 'the flesh', feet: 'the feet', head: 'the head', hands: 'the hands' };
+const LANDMARK_SHORT = { lena: 'low belly', biba: 'sit bones', luna: 'finger and toe pads', spine: 'spine', flesh: 'flesh', feet: 'feet', head: 'head', hands: 'hands' };
+const JOIN_KEY = 'gaga-world:join-hint:v1';
+const ILLUSTRATION_SHORT = 'Illustration, one interpretation. Not reviewed by a Gaga teacher.';
 const SOURCE = {
   A: 'From Gaga or Ohad Naharin’s own words.',
   B: 'Several independent accounts describe it the same way.',
@@ -31,7 +34,7 @@ const FALLBACK_VIEWS = [
 const MODES = [
   { id: 'orbit', label: 'Orbit', tip: 'Circle the dancer freely. Drag to turn, scroll to come closer.' },
   { id: 'walk', label: 'Walk', tip: 'Stand at eye level in the room, at the edge of the floor.' },
-  { id: 'join', label: 'Join', tip: 'You join the class as a dancer. Gaga classes have no observers.' },
+  { id: 'join', label: 'Join', tip: 'Step in as a second dancer. In Gaga there are no observers; everyone in the room moves.' },
   { id: 'director', label: 'Director', tip: 'The camera moves on its own and frames the part of the body the words live in.' },
 ];
 const MATERIALS = [['charcoal', 'Charcoal', 'A dark cast surface, like iron.'], ['plaster', 'Plaster', 'A pale, chalky surface.'], ['graphite', 'Graphite', 'A soft grey with a faint sheen.']];
@@ -239,7 +242,11 @@ export function createUI(opts = {}) {
 
   const teacher = createTeacher({ engine, scripts });
   let entered = false, hidden = false, openPanel = null, cardId = null;
+  const insetState = { raf: 0, last: '', clock: 0 };
   let layersNow = [], layerMap = new Map();
+  // The first word of the first class (float in the current vocabulary) gets the "start here" spot and plays on the landing screen.
+  const startId = (() => { for (const st of scripts[0]?.steps || []) { const k = Object.keys(st.set || {})[0]; if (k && vocab.some((v) => v.id === k)) return k; } return vocab[0]?.id; })();
+  const startWord = vocab.find((v) => v.id === startId);
   const study = { speed: 1, paused: false, trails: false, view: null, mode: cameras?.mode || 'orbit' };
 
   // ---- tooltips ---------------------------------------------------------------------------------
@@ -310,7 +317,7 @@ export function createUI(opts = {}) {
   const pathBtn = (n, title, desc, onclick, cls = '') => el('button', { class: `path ${cls}`.trim(), type: 'button', onclick },
     el('span', { class: 'path-n', text: n }), el('span', { class: 'path-text' }, el('span', { class: 'path-title', text: title }), el('span', { class: 'path-desc', text: desc })), icon('arrow', 'path-arrow'));
   const paths = el('div', { class: 'paths', role: 'group', 'aria-label': 'Ways to begin' },
-    firstClass ? pathBtn('01', `Take the ${firstClass.title.toLowerCase()}`, `${firstClass.minutes ? `${firstClass.minutes} minutes. ` : ''}A teacher adds words one by one. You watch them stack.`, () => begin('class'), 'is-primary') : null,
+    firstClass ? pathBtn('01', 'Start the guided class', `${firstClass.title}${firstClass.minutes ? `, ${firstClass.minutes} minutes` : ''}. Words arrive one by one and you watch them stack.`, () => begin('class'), 'is-primary') : null,
     pathBtn(firstClass ? '02' : '01', 'Explore the words', 'Add and release words yourself, at your own pace.', () => begin('explore')),
     studyWord ? pathBtn(firstClass ? '03' : '02', 'Study one word', `${studyWord.word}: ${studyWord.gloss.charAt(0).toLowerCase()}${studyWord.gloss.slice(1)}. Slowed down, with what to watch for.`, () => begin('study')) : null,
   );
@@ -322,7 +329,7 @@ export function createUI(opts = {}) {
       paths,
       el('p', { class: 'entry-meta' },
         el('button', { class: 'btn-text', type: 'button', 'data-tip': 'Where Gaga comes from and how a class differs from other dance classes.', onclick: () => showPanel('about') }, 'About Gaga'),
-        el('span', { text: `${vocab.length} words · ${scripts.length} ${scripts.length === 1 ? 'class' : 'classes'} · Sound starts when you enter` })),
+        el('span', { text: `${vocab.length} words · ${scripts.length} guided ${scripts.length === 1 ? 'class' : 'classes'} · An independent study · Sound starts when you enter` })),
     ));
   host.append(entry);
 
@@ -336,27 +343,32 @@ export function createUI(opts = {}) {
     host.classList.add('is-entering');
     entry.classList.add('is-leaving');
     if (openPanel === 'about') closePanels();
-    setTimeout(() => { entry.remove(); host.classList.remove('is-entering'); }, reduced() ? 0 : 1000);
+    setTimeout(() => { entry.remove(); host.classList.remove('is-entering'); queueInsets(); }, reduced() ? 0 : 1000);
+    queueInsets();
     bus.emit('enter');
   }
   function begin(path) {
     enter();
     if (path === 'class' && firstClass) startClass(firstClass.id);
-    else if (path === 'study' && studyWord) setTimeout(() => { openCard(studyWord.id); showMe(studyWord.id); }, reduced() ? 0 : 450);
-    else setTimeout(() => coachStart(), reduced() ? 0 : 900);
+    else if (path === 'study' && studyWord) {
+      // Study one word on its own: let the landing float go.
+      if (startId && startId !== studyWord.id) safe(() => engine?.setLayer?.(startId, 0));
+      setTimeout(() => { openCard(studyWord.id); showMe(studyWord.id); }, reduced() ? 0 : 450);
+    } else setTimeout(() => coachStart(), reduced() ? 0 : 900);
   }
 
   // =================================================================================================
   // Top bar: brand, class, about, settings, shortcuts
   // =================================================================================================
-  const classLabel = el('span', { class: 'class-label', text: 'Take a class' });
+  const classLabel = el('span', { class: 'class-label', text: 'Guided class' });
   const classBtn = el('button', { class: 'btn-top btn-class', type: 'button', onclick: onClassButton }, el('span', { class: 'class-dot', 'aria-hidden': 'true' }), classLabel);
   const aboutBtn = el('button', { class: 'btn-top', type: 'button', 'data-tip': 'Where Gaga comes from and how a class differs from other dance classes.', onclick: () => togglePanel('about') }, 'About Gaga');
   const setBtn = el('button', { class: 'btn-icon', type: 'button', 'aria-label': 'Settings', 'aria-expanded': 'false', 'data-tip': 'Sound, how the figure looks, quality, and hiding the interface.', onclick: () => togglePanel('settings') }, icon('settings'));
   const helpBtn = el('button', { class: 'btn-icon', type: 'button', 'aria-label': 'Keyboard shortcuts', 'data-tip': 'Keyboard shortcuts. Press ? at any time.', onclick: () => togglePanel('help') }, el('span', { class: 'qmark', 'aria-hidden': 'true', text: '?' }));
-  chrome.append(el('header', { class: 'topbar' },
+  const topbar = el('header', { class: 'topbar' },
     el('div', { class: 'brand', 'aria-label': APP_NAME.join(' ') }, el('span', { class: 'brand-a', text: APP_NAME[0] }), el('span', { class: 'brand-b', text: APP_NAME[1] })),
-    el('div', { class: 'top-actions' }, classBtn, aboutBtn, el('span', { class: 'vrule', 'aria-hidden': 'true' }), setBtn, helpBtn)));
+    el('div', { class: 'top-actions' }, classBtn, aboutBtn, el('span', { class: 'vrule', 'aria-hidden': 'true' }), setBtn, helpBtn));
+  chrome.append(topbar);
 
   // =================================================================================================
   // Left column: Now in the body
@@ -373,7 +385,7 @@ export function createUI(opts = {}) {
   const stack = el('aside', { class: 'stack panel', 'aria-label': 'Now in the body' }, stackHead,
     el('div', { class: 'stack-body' }, stackEmpty, stackList, el('div', { class: 'stack-foot' }, el('span', { class: 'stack-note', text: 'Each word stacks on the ones before.' }), releaseAll)));
   chrome.append(stack);
-  function setStackFolded(f) { stack.classList.toggle('is-folded', f); stackHead.setAttribute('aria-expanded', f ? 'false' : 'true'); }
+  function setStackFolded(f) { stack.classList.toggle('is-folded', f); stackHead.setAttribute('aria-expanded', f ? 'false' : 'true'); queueInsets(); }
   if (compact()) setStackFolded(true);
 
   function makeDial(id, word) {
@@ -394,6 +406,7 @@ export function createUI(opts = {}) {
 
   const rows = new Map();
   const classIds = new Set();
+  const classReleased = new Set(); // ids the guided class let go of, labelled while they fade
   let lastSummary = null;
   function makeRow(id) {
     const v = byId.get(id) || { id, word: cap(id) };
@@ -428,7 +441,8 @@ export function createUI(opts = {}) {
         r.word.style.fontStretch = `${(96 + (r.stretchMax - 96) * v).toFixed(1)}%`;
         r.word.style.fontWeight = String(Math.round(360 + 300 * v));
       }
-      const txt = releasing ? 'letting go' : String(Math.round(t * 100));
+      if (!releasing && classReleased.has(L.id)) classReleased.delete(L.id);
+      const txt = releasing ? (classReleased.has(L.id) ? 'released by the class' : 'letting go') : String(Math.round(t * 100));
       if (txt !== r.lastTxt) { r.lastTxt = txt; r.val.textContent = txt; }
       const fromClass = classIds.has(L.id);
       if (fromClass !== r.fromClass) { r.fromClass = fromClass; r.tag.textContent = fromClass ? 'class' : ''; }
@@ -441,7 +455,7 @@ export function createUI(opts = {}) {
       if (seen.has(id) || r.leaving) continue;
       r.leaving = true;
       r.li.classList.add('is-leaving');
-      r.leaveT = setTimeout(() => { r.li.remove(); rows.delete(id); }, reduced() ? 0 : 520);
+      r.leaveT = setTimeout(() => { r.li.remove(); rows.delete(id); classReleased.delete(id); }, reduced() ? 0 : 520);
     }
     const active = layers.filter((L) => L.target > 0);
     if (stackCount.textContent !== String(active.length)) stackCount.textContent = String(active.length);
@@ -471,12 +485,12 @@ export function createUI(opts = {}) {
 
   let lastCueAt = -10, lastLine = null, lastTimeTxt = '';
   const wordSpans = (words, step) => words.flatMap((w, i) => [el('span', { class: 'w', style: `--d:${(i * step).toFixed(2)}s` }, w), ' ']);
-  function addCue(text) {
+  function addCue(text, released = []) {
     text = String(text || '').trim();
-    if (!text) return;
+    if (!text && !released.length) return;
     const now = performance.now() / 1000;
-    const words = text.split(/\s+/);
-    const short = words.length <= 2;
+    const words = text ? text.split(/\s+/) : [];
+    const short = words.length <= 2 && !released.length;
     // Rapid short cues (a countdown) gather on one line instead of flushing the history.
     if (short && lastLine?.dataset.short === '1' && now - lastCueAt < 2.2 && lastLine.childElementCount < 24) {
       lastCueAt = now;
@@ -484,7 +498,8 @@ export function createUI(opts = {}) {
       return;
     }
     lastCueAt = now;
-    const line = el('p', { class: 'sub' }, wordSpans(words, Math.max(0.05, Math.min(0.11, 2.2 / words.length))));
+    const line = el('p', { class: 'sub' }, wordSpans(words, Math.max(0.05, Math.min(0.11, 2.2 / Math.max(1, words.length)))),
+      released.length ? el('span', { class: 'sub-note' }, `Release ${released.join(', ')}`) : null);
     line.dataset.short = short ? '1' : '0';
     subs.append(line);
     lastLine = line;
@@ -495,27 +510,33 @@ export function createUI(opts = {}) {
       if (age >= 3) { n.classList.add('is-gone'); setTimeout(() => n.remove(), reduced() ? 0 : 800); }
     });
   }
-  teacher.on('cue', (c) => { if (c.step?.set) for (const id of Object.keys(c.step.set)) classIds.add(id); addCue(c.text); });
+  teacher.on('cue', (c) => {
+    if (c.step?.set) for (const id of Object.keys(c.step.set)) classIds.add(id);
+    const released = (c.step?.release || []).filter((id) => { const L = layerMap.get(id); return L && L.target > 0; });
+    for (const id of released) classReleased.add(id);
+    addCue(c.text, released.map((id) => byId.get(id)?.word || id));
+  });
   teacher.on('start', ({ script }) => {
     subs.replaceChildren(); lastLine = null; classIds.clear();
     trTitle.textContent = script?.title || 'Class';
     host.classList.add('is-teaching');
     closePanels('classes');
     syncClassButton();
+    queueInsets(); setTimeout(queueInsets, 900);
   });
   teacher.on('end', ({ reason }) => {
     classIds.clear();
     if (reason === 'restart') return;
     toast(reason === 'complete' ? 'The class is over. The body keeps moving; release the layers when you are ready.' : 'Class ended. Your layers stay until you release them.', 4200);
-    setTimeout(() => { if (teacher.state === 'idle') host.classList.remove('is-teaching'); }, reason === 'complete' ? 3500 : 200);
+    setTimeout(() => { if (teacher.state === 'idle') { host.classList.remove('is-teaching'); queueInsets(); } }, reason === 'complete' ? 3500 : 200);
     syncClassButton();
   });
   function syncClassButton() {
     const active = teacher.state !== 'idle';
-    classLabel.textContent = active ? 'End class' : 'Take a class';
+    classLabel.textContent = active ? 'End class' : 'Guided class';
     classBtn.classList.toggle('is-on', active);
     classBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    classBtn.setAttribute('data-tip', active ? 'End the class. Your layers stay until you release them.' : 'A teacher leads a class: words arrive over time and stack. You can add your own at any point. Press T.');
+    classBtn.setAttribute('data-tip', active ? 'End the guided class. Your layers stay until you release them.' : 'A guided sequence of cues, modelled on how a class unfolds: words arrive over time and stack. Add your own at any point. Press T.');
   }
   syncClassButton();
   function syncCaptions() {
@@ -528,10 +549,10 @@ export function createUI(opts = {}) {
     if (capState.textContent !== st) capState.textContent = st;
   }
 
-  const classes = el('div', { class: 'pop classes', role: 'dialog', 'aria-label': 'Choose a class', tabindex: '-1' },
+  const classes = el('div', { class: 'pop classes', role: 'dialog', 'aria-label': 'Choose a guided class', tabindex: '-1' },
     el('div', { class: 'sheet-grip', 'aria-hidden': 'true' }),
-    el('p', { class: 'eyebrow ink', text: 'Choose a class' }),
-    el('p', { class: 'pop-sub', text: 'The teacher adds and releases words over time. Add your own whenever you like.' }),
+    el('p', { class: 'eyebrow ink', text: 'Choose a guided class' }),
+    el('p', { class: 'pop-sub', text: 'Cues arrive over time and stack, the way a class unfolds. Add your own words whenever you like. To take a real class, find a certified teacher.' }),
     el('div', { class: 'class-list' }, scripts.map((s) => {
       const ids = [];
       for (const st of s.steps || []) for (const id of Object.keys(st.set || {})) if (!ids.includes(id)) ids.push(id);
@@ -545,7 +566,7 @@ export function createUI(opts = {}) {
     if (!entered) enter();
     if (study.paused) setPaused(false);
     teacher.start(id);
-    toast('Class begins. Keep your eyes open and keep moving.', 2600);
+    toast('Guided class begins. Cues appear as captions.', 2600);
   }
   function onClassButton() {
     if (teacher.state !== 'idle') { teacher.stop(); return; }
@@ -572,7 +593,7 @@ export function createUI(opts = {}) {
     return wrap;
   }
   function groupsFor(tier) {
-    const words = vocab.filter((v) => (tier === 1 ? (v.tier || 1) <= 1 : (v.tier || 1) > 1));
+    const words = vocab.filter((v) => (tier === 1 ? (v.tier || 1) <= 1 : (v.tier || 1) > 1) && v.id !== startId);
     const regions = [...new Set(words.map((v) => v.region))].sort((a, b) => ((REGION_ORDER.indexOf(a) + 1 || 99) - (REGION_ORDER.indexOf(b) + 1 || 99)));
     return regions.map((region) => el('div', { class: 'group', role: 'group', 'aria-label': REGION_LABEL[region] || cap(region) },
       el('span', { class: 'group-label', 'aria-hidden': 'true', text: REGION_LABEL[region] || cap(region) }),
@@ -582,9 +603,13 @@ export function createUI(opts = {}) {
   const tier2 = el('div', { class: 'tier-2', id: 'more-words' }, el('div', { class: 'tier-inner' }, groupsFor(2)));
   const moreBtn = tier2Count ? el('button', { class: 'more-btn', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'more-words', onclick: () => setMore(!rail.classList.contains('is-more')) },
     icon('plus', 'more-ico'), el('span', { class: 'more-label' }), el('span', { class: 'more-count', text: String(tier2Count) })) : null;
+  const startGroup = startWord ? el('div', { class: 'group group-start', role: 'group', 'aria-label': 'Start here' },
+    el('span', { class: 'group-label', 'aria-hidden': 'true', text: 'Start here' }),
+    el('ul', { class: 'group-words' }, makeWord(startWord))) : null;
+  const railCoach = el('div', { class: 'rail-coach', 'aria-live': 'polite' });
   const rail = el('nav', { class: 'rail panel', 'aria-label': 'Gaga words' },
-    el('div', { class: 'rail-head' }, el('span', { class: 'eyebrow ink', text: 'Words' }), el('span', { class: 'rail-hint', text: `${verb()} to add. ${verb()} again to release.` })),
-    el('div', { class: 'rail-scroll' }, el('div', { class: 'tier-1' }, groupsFor(1)), moreBtn, tier2Count ? tier2 : null));
+    el('div', { class: 'rail-head' }, el('span', { class: 'eyebrow ink', text: 'Words' }), el('span', { class: 'rail-hint', text: host.classList.contains('is-touch') ? 'Tap to add, again to release' : 'Click to add, again to release. Keys 1 to 9.' })),
+    el('div', { class: 'rail-scroll' }, railCoach, el('div', { class: 'tier-1' }, startGroup, groupsFor(1)), moreBtn, tier2Count ? tier2 : null));
   chrome.append(rail);
   function setMore(on) {
     rail.classList.toggle('is-more', on);
@@ -623,7 +648,7 @@ export function createUI(opts = {}) {
   const preview = el('div', { class: 'preview', 'aria-hidden': 'true' });
   chrome.append(preview);
   let previewT = 0, previewId = null;
-  function schedulePreview(id, anchor, delay = 300) {
+  function schedulePreview(id, anchor, delay = 420) {
     clearTimeout(previewT);
     if (!id) { previewT = setTimeout(hidePreview, 120); return; }
     previewT = setTimeout(() => showPreview(id, anchor), preview.classList.contains('is-on') ? 60 : delay);
@@ -644,9 +669,12 @@ export function createUI(opts = {}) {
       preview.style.left = `${Math.round(Math.min(Math.max(r.left + r.width / 2 - pw / 2, 12), window.innerWidth - pw - 12))}px`;
       preview.style.top = `${Math.round(r.top - ph - 12)}px`;
     } else {
+      // Stay inside the word column, below or above the row, never over the stage.
       const rr = rail.getBoundingClientRect();
-      preview.style.left = `${Math.round(rr.left - pw - 14)}px`;
-      preview.style.top = `${Math.round(Math.min(Math.max(r.top + r.height / 2 - ph / 2, 80), window.innerHeight - ph - 90))}px`;
+      preview.style.left = `${Math.round(rr.left + 8)}px`;
+      preview.style.width = `${Math.round(rr.width - 16)}px`;
+      const below = r.top + r.height / 2 < rr.top + rr.height / 2;
+      preview.style.top = `${Math.round(below ? r.bottom + 6 : r.top - preview.offsetHeight - 6)}px`;
     }
   }
   function hidePreview() { previewId = null; preview.classList.remove('is-on'); }
@@ -657,6 +685,16 @@ export function createUI(opts = {}) {
   const card = el('article', { class: 'card panel', role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'card-word', tabindex: '-1' });
   chrome.append(card);
   let cardParts = null;
+  let swipe = null;
+  card.addEventListener('pointerdown', (e) => { if (compact() && e.target.closest('.card-grip, .card-top, .card-head')) swipe = { y: e.clientY, id: e.pointerId }; });
+  card.addEventListener('pointerup', (e) => {
+    if (!swipe || e.pointerId !== swipe.id) return;
+    const dy = e.clientY - swipe.y;
+    swipe = null;
+    if (dy < -36) setPeek(false);
+    else if (dy > 36) { if (card.classList.contains('is-peek')) closePanels(); else setPeek(true); }
+  });
+  card.addEventListener('pointercancel', () => { swipe = null; });
   const section = (title, ...kids) => el('section', { class: 'card-sec' }, el('h3', { class: 'eyebrow', text: title }), ...kids);
   function renderCard(v) {
     const dial = makeDial(v.id, v.word);
@@ -671,7 +709,7 @@ export function createUI(opts = {}) {
     const meta = [REGION_LABEL[v.region] || cap(v.region), KIND_LABEL[v.kind] || cap(v.kind), v.key ? `Key ${v.key}` : null].filter(Boolean).join(' · ');
     const grade = String(v.confidence || '').toUpperCase();
     card.replaceChildren(
-      el('div', { class: 'sheet-grip', 'aria-hidden': 'true' }),
+      el('button', { class: 'sheet-grip card-grip', type: 'button', 'aria-label': 'Expand or shrink the card', 'data-tip': 'Drag or tap to expand or shrink the card.', onclick: () => setPeek(!card.classList.contains('is-peek')) }),
       el('div', { class: 'card-top' },
         el('button', { class: 'btn-text card-back', type: 'button', 'data-tip': 'Back to the list of words. Esc also works.', onclick: () => closePanels() }, icon('back'), 'Words'),
         el('button', { class: 'btn-icon', type: 'button', 'aria-label': 'Close the card', 'data-tip': 'Close the card. Esc also works.', onclick: () => closePanels() }, icon('close'))),
@@ -685,11 +723,11 @@ export function createUI(opts = {}) {
           v.cue ? el('figure', { class: 'card-cue' }, el('blockquote', {}, el('p', { text: `“${v.cue}”` })), el('figcaption', { text: 'What a teacher might say' })) : null),
         el('section', { class: 'card-sec' },
           el('div', { class: 'sec-head' }, el('h3', { class: 'eyebrow', text: 'Watch for' }), showBtn),
-          v.lookFor?.length ? el('ul', { class: 'card-list' }, v.lookFor.map((t) => el('li', { text: t }))) : el('p', { class: 'card-text muted', text: 'Watch the whole body and notice what changes.' })),
+          v.lookFor?.length ? el('ul', { class: 'card-list' }, v.lookFor.map((t) => el('li', { text: t }))) : el('p', { class: 'card-text muted', text: 'Watch the whole body and notice what changes.' }),
+          illustrationNote ? el('details', { class: 'note' }, el('summary', { 'data-tip': 'Read the full note about the dancer.' }, ILLUSTRATION_SHORT), el('p', { text: illustrationNote })) : null),
         v.explore?.length ? section('Try in your body', el('ul', { class: 'card-list is-questions' }, v.explore.map((t) => el('li', { text: t })))) : null,
         section('Where you feel it', el('div', { class: 'feel' }, el('p', { class: 'card-text feel-text', text: v.sensation || 'Through the whole body' }), bodyMap(v.bodyMap || []))),
-        SOURCE[grade] ? section('Source strength', el('div', { class: 'source' }, el('span', { class: 'grade', text: grade, 'data-tip': 'How firmly the research backs this description. A: Gaga or Naharin\u2019s own words. B: several independent accounts. C: a single account.' }), el('p', { class: 'card-text', text: SOURCE[grade] }))) : null,
-        illustrationNote ? el('p', { class: 'fine', text: illustrationNote }) : null),
+        SOURCE[grade] ? section('Confidence in this meaning', el('div', { class: 'source' }, el('span', { class: 'grade', text: grade, 'data-tip': 'A: Gaga or Naharin\u2019s own words. B: several independent accounts. C: a single account.' }), el('div', {}, el('p', { class: 'card-text', text: SOURCE[grade] }), el('p', { class: 'source-sub', text: 'How well sources agree on the word. It does not rate the animation.' })))) : null),
       el('div', { class: 'card-foot' },
         el('div', { class: 'card-dial' }, el('span', { class: 'eyebrow', text: 'Intensity' }), dial.dial),
         el('div', { class: 'card-buttons' }, fireBtn, addBtn)));
@@ -702,6 +740,8 @@ export function createUI(opts = {}) {
     hidePreview();
     if (cardId !== id || !cardParts) renderCard(v);
     cardId = id;
+    card.classList.remove('is-peek');
+    host.classList.remove('has-peek');
     showPanel('card');
     syncCard();
     card.querySelector('.card-scroll').scrollTop = 0;
@@ -741,6 +781,13 @@ export function createUI(opts = {}) {
     syncStudy(true);
     const bits = [preset?.view ? viewLabel(preset.view) : null, SPEEDS.find((s) => s[0] === preset?.speed)?.[2]?.toLowerCase(), preset?.trails ? 'trails' : null, preset?.map ? 'sensation map' : null].filter(Boolean);
     toast(`${v.word}: ${bits.join(', ')}`, 2400);
+    if (compact() && openPanel === 'card') setPeek(true);
+  }
+  // Phones: a card can drop to a peek so the demonstration stays visible above it.
+  function setPeek(on) {
+    card.classList.toggle('is-peek', !!on);
+    host.classList.toggle('has-peek', !!on && openPanel === 'card');
+    queueInsets(); setTimeout(queueInsets, 650);
   }
 
   // =================================================================================================
@@ -759,9 +806,27 @@ export function createUI(opts = {}) {
   const viewBtn = el('button', { class: 'sb-view', type: 'button', 'aria-haspopup': 'true', 'aria-expanded': 'false', 'data-tip': 'Choose an angle, or another way to watch. V cycles the angles.', onclick: () => togglePanel('views') }, icon('view'), viewLabelEl, icon('chevup', 'sb-chev'));
   const trailsBtn = el('button', { class: 'sb-btn sb-toggle', type: 'button', 'aria-pressed': 'false', disabled: !hasApp || null, 'aria-label': 'Trails', 'data-tip': 'Trails: thin lines that show where the hands, head, pelvis and feet just travelled. R key.', onclick: () => setTrails(!study.trails) }, icon('trails'), el('span', { class: 'sb-text', text: 'Trails' }));
   const mapBtn = el('button', { class: 'sb-btn sb-toggle', type: 'button', 'aria-pressed': 'false', 'aria-label': 'Sensation map', 'data-tip': 'Sensation map: soft light on the body where the active words are felt.', onclick: () => setSetting('sensationMap', !settings.sensationMap) }, icon('map'), el('span', { class: 'sb-text', text: 'Map' }));
+  const legend = el('div', { class: 'legend', 'aria-live': 'polite' });
+  let lastLegend = null;
+  function syncLegend() {
+    const on = !!settings.sensationMap && entered && !hidden;
+    const items = on ? layersNow.filter((L) => L.target > 0).map((L) => {
+      const v = byId.get(L.id);
+      const parts = [...new Set((v?.bodyMap || []).map((k) => LANDMARK_SHORT[k]).filter(Boolean))];
+      return [v?.word || L.id, parts.length ? parts.join(', ') : 'whole body'];
+    }) : [];
+    const key = on ? JSON.stringify(items) : '';
+    if (key === lastLegend) return;
+    lastLegend = key;
+    legend.replaceChildren(
+      el('span', { class: 'legend-title' }, el('span', { class: 'legend-dot', 'aria-hidden': 'true' }), 'Lit where it is felt'),
+      ...(items.length ? items.map(([w, where]) => el('span', { class: 'legend-item' }, el('b', { text: `${w}:` }), ` ${where}`)) : [el('span', { class: 'legend-item', text: 'Add a word to see where it is felt.' })]));
+    legend.classList.toggle('is-on', on);
+    queueInsets();
+  }
   const studybar = el('div', { class: 'studybar panel', role: 'toolbar', 'aria-label': 'Study controls' },
     pauseBtn, stepBtn, el('span', { class: 'sb-rule' }), speedSeg, el('span', { class: 'sb-rule' }), viewBtn, el('span', { class: 'sb-rule' }), trailsBtn, mapBtn);
-  chrome.append(studybar);
+  chrome.append(legend, studybar);
 
   const viewBtns = new Map();
   const viewsPop = el('div', { class: 'pop views', role: 'dialog', 'aria-label': 'Angle and ways to watch', tabindex: '-1' },
@@ -774,7 +839,7 @@ export function createUI(opts = {}) {
     })),
     el('p', { class: 'eyebrow ink pop-gap', text: 'Ways to watch' }),
     el('div', { class: 'mode-list' }, MODES.map((m) => {
-      const b = el('button', { class: 'mode-opt', type: 'button', 'data-mode': m.id, onclick: () => { setMode(m.id); closePanels(); } }, icon(m.id), el('span', { class: 'mode-text' }, el('span', { class: 'mode-name', text: m.label }), el('span', { class: 'mode-desc', text: m.tip })));
+      const b = el('button', { class: 'mode-opt', type: 'button', 'data-mode': m.id, 'data-tip': `${m.label}. ${m.tip}`, onclick: () => { setMode(m.id); closePanels(); } }, icon(m.id), el('span', { class: 'mode-name', text: m.label }));
       viewBtns.set(`mode:${m.id}`, b);
       return b;
     })));
@@ -829,16 +894,40 @@ export function createUI(opts = {}) {
     study.mode = cameras?.mode || m;
     if (m !== 'orbit') study.view = null;
     syncStudy(true);
-    if (m === 'join') toast('You joined the class. Gaga classes have no observers.', 3000);
     coachDone('angle');
   }
+  // Join: keep the soloist clear of the layer list, and explain the thread once.
+  const hint = el('div', { class: 'hint', role: 'status', 'aria-live': 'polite' });
+  let joinFoldedStack = false, lastModeSeen = study.mode;
+  function onModeChange(m) {
+    if (m === lastModeSeen) return;
+    const was = lastModeSeen;
+    lastModeSeen = m;
+    if (m === 'join') {
+      if (!compact() && !stack.classList.contains('is-folded')) { setStackFolded(true); joinFoldedStack = true; }
+      if (store.get(JOIN_KEY) !== 'done') {
+        hint.textContent = host.classList.contains('is-touch') ? 'Drag on the stage: a thread guides your hands. In Gaga there are no observers.' : 'Move the cursor: a thread guides your hands. In Gaga there are no observers.';
+        hint.classList.add('is-on');
+      } else toast('You stepped in. In Gaga there are no observers.', 2600);
+    } else if (was === 'join') {
+      if (joinFoldedStack) { setStackFolded(false); joinFoldedStack = false; }
+      hint.classList.remove('is-on');
+    }
+    queueInsets();
+  }
+  const dismissHint = (e) => {
+    if (!hint.classList.contains('is-on') || e.target?.closest?.('.chrome')) return;
+    clearTimeout(hint._t);
+    hint._t = setTimeout(() => { hint.classList.remove('is-on'); store.set(JOIN_KEY, 'done'); }, 1600);
+  };
+  window.addEventListener('pointermove', dismissHint, { passive: true });
   function cycleMode() {
     if (cameras?.cycle) safe(() => cameras.cycle());
     else { const i = MODES.findIndex((m) => m.id === study.mode); safe(() => cameras?.setMode?.(MODES[(i + 1) % MODES.length].id)); }
     study.mode = cameras?.mode || study.mode;
     study.view = null;
     syncStudy(true);
-    toast(study.mode === 'join' ? 'You joined the class. Gaga classes have no observers.' : `${viewLabel(study.mode)} camera`, 1800);
+    if (study.mode !== 'join') toast(`${viewLabel(study.mode)} camera`, 1800);
   }
   safe(() => cameras?.on?.('mode', (m) => { study.mode = m; if (m !== 'orbit') study.view = null; syncStudy(true); }));
   safe(() => cameras?.on?.('study', (v) => { study.view = typeof v === 'string' ? v : v?.id || v?.view || study.view; study.mode = 'orbit'; syncStudy(true); }));
@@ -869,6 +958,8 @@ export function createUI(opts = {}) {
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
     host.dataset.cam = study.mode || '';
+    onModeChange(study.mode);
+    syncLegend();
   }
 
   // =================================================================================================
@@ -947,7 +1038,7 @@ export function createUI(opts = {}) {
   // First-run tour: add a word, slow it down, change the angle
   // =================================================================================================
   const COACH = [
-    { id: 'word', title: 'Add a word', text: 'Choose any word in the list. It becomes a layer in the body, and the next word stacks on top.', anchor: () => (compact() ? rail : rail.querySelector('.group')) },
+    { id: 'word', title: 'Add a word', text: '', anchor: () => rail },
     { id: 'speed', title: 'Slow it down', text: 'Watch at half or quarter speed to see the detail. The camera keeps its pace.', anchor: () => speedSeg },
     { id: 'angle', title: 'Change the angle', text: 'Look from the side, from behind, or close on the hands and feet.', anchor: () => viewBtn },
   ];
@@ -962,46 +1053,63 @@ export function createUI(opts = {}) {
   function coachStart(force = false) {
     if (!force && store.get(COACH_KEY) === 'done') return;
     coachStep = 0;
-    // Skip steps already done (for example a word is already in the body).
-    if (layersNow.some((L) => L.target > 0)) coachStep = 1;
     coachShow();
   }
   function coachShow() {
     if (coachStep < 0 || coachStep >= COACH.length) return;
     const s = COACH[coachStep];
+    const startOn = startId && layerMap.get(startId)?.target > 0;
+    const text = s.id === 'word'
+      ? (startOn ? `The body is in ${startWord.word}, where most classes begin. Add a second word and watch it stack.` : `Start with ${startWord?.word || 'any word'}, where most classes begin. Each word you add stacks on the last.`)
+      : s.text;
+    host.dataset.coach = s.id;
+    // Desktop step 1 sits inside the word list, so nothing covers the stage.
+    if (s.id === 'word' && !compact()) {
+      coach.classList.remove('is-on');
+      railCoach.replaceChildren(
+        el('div', { class: 'coach-head' }, el('span', { class: 'coach-count', text: `1 of ${COACH.length}` }), el('button', { class: 'btn-text', type: 'button', 'data-tip': 'Close the tour. You can replay it from Settings.', onclick: () => coachEnd() }, 'Skip tour')),
+        el('p', { class: 'coach-title', text: s.title }), el('p', { class: 'coach-text', text }));
+      railCoach.classList.add('is-on');
+      rail.querySelector('.rail-scroll').scrollTop = 0;
+      queueInsets();
+      return;
+    }
+    railCoach.classList.remove('is-on');
     coachCount.textContent = `${coachStep + 1} of ${COACH.length}`;
     coachTitle.textContent = s.title;
-    coachText.textContent = s.text;
+    coachText.textContent = text;
     coach.classList.add('is-on');
-    host.dataset.coach = s.id;
     requestAnimationFrame(placeCoach);
+    queueInsets();
   }
   function placeCoach() {
     if (coachStep < 0 || coachStep >= COACH.length) return;
     const a = COACH[coachStep].anchor();
     if (!a) return;
     const r = a.getBoundingClientRect(), cw = coach.offsetWidth, ch = coach.offsetHeight;
-    let x, y, side;
-    if (!compact() && r.left > window.innerWidth * 0.6) { x = r.left - cw - 16; y = r.top + Math.min(r.height, 120) / 2 - 28; side = 'right'; }
-    else { x = r.left + r.width / 2 - cw / 2; y = r.top - ch - 16; side = 'down'; }
-    x = Math.min(Math.max(x, 12), window.innerWidth - cw - 12);
-    y = Math.max(y, 70);
+    // Phones: a card under the top bar. Desktop: beside the study bar in the empty lower left, pointing right.
+    if (compact()) { coach.style.transform = ''; coach.dataset.side = 'top'; return; }
+    const sb = studybar.getBoundingClientRect();
+    const x = Math.max(12, sb.left - cw - 18);
+    const y = Math.min(window.innerHeight - ch - 12, sb.bottom - ch);
     coach.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
-    coach.dataset.side = side;
-    const ax = side === 'down' ? Math.min(Math.max(r.left + r.width / 2 - x, 18), cw - 18) : cw;
-    coach.style.setProperty('--ax', `${Math.round(ax)}px`);
+    coach.dataset.side = 'right';
+    coach.style.setProperty('--ay', `${Math.round(Math.min(Math.max(r.top + r.height / 2 - y, 14), ch - 14))}px`);
   }
   function coachDone(id) {
     if (coachStep < 0 || COACH[coachStep]?.id !== id) return;
     coachStep += 1;
     if (coachStep >= COACH.length) { coachEnd(); toast('You have the basics. Press ? any time for shortcuts.', 3000); return; }
     coach.classList.remove('is-on');
+    railCoach.classList.remove('is-on');
     host.dataset.coach = COACH[coachStep].id;
     setTimeout(coachShow, reduced() ? 0 : 450);
   }
   function coachEnd() {
     coachStep = -1;
     coach.classList.remove('is-on');
+    railCoach.classList.remove('is-on');
+    queueInsets();
     delete host.dataset.coach;
     store.set(COACH_KEY, 'done');
   }
@@ -1024,6 +1132,7 @@ export function createUI(opts = {}) {
     hideTip();
     hidePreview();
     if (name !== 'card') requestAnimationFrame(() => p.focus({ preventScroll: true }));
+    queueInsets(); setTimeout(queueInsets, 700);
   }
   function closePanels(only) {
     if (!openPanel || (only && openPanel !== only)) return;
@@ -1036,6 +1145,9 @@ export function createUI(opts = {}) {
     delete host.dataset.panel;
     setBtn.setAttribute('aria-expanded', 'false');
     viewBtn.setAttribute('aria-expanded', 'false');
+    card.classList.remove('is-peek');
+    host.classList.remove('has-peek');
+    queueInsets(); setTimeout(queueInsets, 600);
   }
   function togglePanel(name) { if (openPanel === name) closePanels(); else showPanel(name); }
   document.addEventListener('pointerdown', (e) => {
@@ -1049,13 +1161,15 @@ export function createUI(opts = {}) {
   // Hide / show
   // =================================================================================================
   const showBtn = el('button', { class: 'show-ui', type: 'button', 'aria-label': 'Show the interface', onclick: () => setHidden(false) }, icon('show'), el('span', { text: 'Show' }));
-  host.append(toastEl, showBtn, tip);
+  host.append(toastEl, hint, showBtn, tip);
   function setHidden(h) {
     if (!entered && h) return;
     hidden = !!h;
     host.classList.toggle('is-hidden', hidden);
     hideTip(); hidePreview();
     if (hidden) toast('Press H, or Show, to bring the interface back.', 2400); else toastEl.classList.remove('is-on');
+    syncLegend();
+    queueInsets();
   }
 
   // =================================================================================================
@@ -1105,11 +1219,71 @@ export function createUI(opts = {}) {
     host.style.setProperty('--strip-h', `${Math.round(rail.getBoundingClientRect().height)}px`);
     host.style.setProperty('--lesson-h', `${Math.round(lesson.getBoundingClientRect().height)}px`);
     if (coachStep >= 0) placeCoach();
+    queueInsets();
   };
-  if (window.ResizeObserver) { const ro = new ResizeObserver(measure); ro.observe(studybar); ro.observe(rail); ro.observe(lesson); }
+  if (window.ResizeObserver) { const ro = new ResizeObserver(measure); for (const n of [studybar, rail, lesson, stack, card, legend]) ro.observe(n); }
   window.addEventListener('resize', () => { measure(); if (tipFor) placeTip(tipFor); });
   document.fonts?.ready?.then(measure).catch(() => {});
   requestAnimationFrame(measure);
+
+  // =================================================================================================
+  // Camera insets: tell the camera which parts of the screen the interface covers, so it frames the dancer in the rest.
+  // =================================================================================================
+  function queueInsets() {
+    if (insetState.raf) return;
+    insetState.raf = requestAnimationFrame(() => { insetState.raf = 0; sendInsets(); });
+  }
+  function computeInsets() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const ins = { top: 0, right: 0, bottom: 0, left: 0 };
+    const R = (n) => n.getBoundingClientRect();
+    if (!entered) {
+      const inner = entry.querySelector('.entry-inner');
+      if (inner) { const r = R(inner); if (compact()) ins.bottom = Math.round(H - r.top + 12); else ins.left = Math.round(r.right + 32); }
+      return ins;
+    }
+    if (hidden) return ins;
+    ins.top = R(topbar.querySelector('.top-actions')).bottom + 8;
+    if (hint.classList.contains('is-on')) ins.top = Math.max(ins.top, R(hint).bottom + 8);
+    if (compact()) {
+      const coachTop = coach.classList.contains('is-on');
+      if (!openPanel && !coachTop) ins.top = Math.max(ins.top, R(stack).bottom + 8);
+      if (coachTop) ins.top = Math.max(ins.top, R(coach).bottom + 8);
+      let edge = H;
+      if (openPanel && openPanel !== 'views') edge = R(panels[openPanel]).top;
+      else {
+        edge = Math.min(R(studybar).top, openPanel === 'views' ? R(viewsPop).top : R(rail).top);
+        if (host.classList.contains('is-teaching')) edge = Math.min(edge, R(lesson).top);
+        if (legend.classList.contains('is-on')) edge = Math.min(edge, R(legend).top);
+      }
+      ins.bottom = H - edge + 8;
+    } else {
+      let left = R(stack).right;
+      if (host.classList.contains('is-teaching')) left = Math.max(left, R(lesson).right);
+      ins.left = left + 16;
+      const side = openPanel === 'card' ? card : rail;
+      let rightEdge = R(side).left;
+      if (openPanel === 'settings' || openPanel === 'classes' || openPanel === 'views') rightEdge = Math.min(rightEdge, R(panels[openPanel]).left);
+      ins.right = W - rightEdge + 16;
+      let edge = R(studybar).top;
+      if (legend.classList.contains('is-on')) edge = Math.min(edge, R(legend).top);
+      ins.bottom = H - edge + 10;
+    }
+    for (const k of Object.keys(ins)) ins[k] = Math.max(0, Math.round(ins[k]));
+    return ins;
+  }
+  function sendInsets() {
+    const ins = computeInsets();
+    const key = `${ins.top},${ins.right},${ins.bottom},${ins.left}`;
+    if (key === insetState.last) return;
+    insetState.last = key;
+    host.style.setProperty('--inset-top', `${ins.top}px`);
+    safe(() => cameras?.setInsets?.(ins));
+    bus.emit('insets', ins);
+  }
+
+  // The landing screen shows the dancer floating before anyone enters.
+  if (startId) safe(() => engine?.setLayer?.(startId, 0.35));
 
   syncSettingsUI();
   applySetting('material');
@@ -1129,6 +1303,9 @@ export function createUI(opts = {}) {
     syncWords();
     syncCard();
     syncCaptions();
+    syncLegend();
+    insetState.clock += Number(dt) || 0;
+    if (insetState.clock > 0.25) { insetState.clock = 0; queueInsets(); }
   }
 
   return {
@@ -1145,6 +1322,8 @@ export function createUI(opts = {}) {
     setHidden,
     setMore,
     coach: (force = true) => coachStart(force),
+    insets: () => computeInsets(),
+    setPeek,
     preview: (id) => { const c = chips.get(id); if (c) showPreview(id, c.wrap); },
     get element() { return host; },
   };

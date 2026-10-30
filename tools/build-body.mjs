@@ -169,7 +169,7 @@ function sculptHead() {
   E(P, 'parietal', [0, 1.655, -0.03], [0.0735, 0.06, 0.07], null, 0.03);
   E(P, 'face', [0, 1.592, 0.004], [0.064, 0.082, 0.076], null, 0.05);     // broad front plane, wraps to the sides
   E(P, 'lowerface', [0, 1.54, 0.008], [0.053, 0.046, 0.062], null, 0.045); // rounded, slightly receding mouth/jaw zone
-  E(P, 'brow', [0, 1.652, 0.048], [0.056, 0.018, 0.024], null, 0.05);
+  E(P, 'brow', [0, 1.652, 0.048], [0.044, 0.018, 0.024], null, 0.06);
   E(P, 'occiput', [0, 1.605, -0.07], [0.052, 0.042, 0.03], null, 0.035);
   for (const s of [1, -1]) {
     C(P, 'jaw', [s * 0.054, 1.552, -0.02], [s * 0.018, 1.508, 0.04], 0.0105, 0.0115, 0.04);
@@ -253,7 +253,7 @@ function sculptHand(s) {
     E(Pp, 'dipK', combo(p2, F.n, -(eAt(p2) - 0.001)), [0.0048, r[3] * 0.5, 0.002], fax, 0.002);
     for (const [c, rr] of [[combo(p0, dir, 0.016), r[0]], [p1, r[1]], [p2, r[3]]]) {
       const o2 = combo(c, F.n, sh + rr * SV + 0.0002);
-      C(Pp, 'crease', combo(o2, side, -rr * 0.75), combo(o2, side, rr * 0.75), 0.001, 0.001, 0.0022, { sub: true });
+      C(Pp, 'crease', combo(o2, side, -rr * 0.7), combo(o2, side, rr * 0.7), 0.0013, 0.0013, 0.003, { sub: true });
     }
   });
   // thumb (metacarpal partly buried in the thenar), same treatment as the fingers
@@ -268,7 +268,7 @@ function sculptHand(s) {
   E(Pt, 'mcpK', combo(T2h, tflex, -(tAt(T2h) - 0.0016)), [0.0068, 0.0062, 0.003], tax, 0.003);
   E(Pt, 'ipK', combo(T3h, tflex, -(tAt(T3h) - 0.0011)), [0.0055, 0.0052, 0.0022], tax, 0.0022);
   const tcr = combo(T3h, tflex, tsh + 0.0093 * TSV + 0.0002);
-  C(Pt, 'crease', combo(tcr, tside, -0.007), combo(tcr, tside, 0.007), 0.001, 0.001, 0.0022, { sub: true });
+  C(Pt, 'crease', combo(tcr, tside, -0.0065), combo(tcr, tside, 0.0065), 0.0013, 0.0013, 0.003, { sub: true });
 }
 
 // ---------- leg (thigh, knee, shin, ankle)
@@ -792,6 +792,21 @@ function cavityAt(p, n, own) {
   for (let i = 0; i < hs.length; i++) { const q = combo(p, n, hs[i]); const d = fieldAt(q[0], q[1], q[2], pd, mask); occ += ws[i] * clamp((hs[i] - d) / hs[i], 0, 1); }
   return clamp(1 - occ * 1.3, 0, 1);
 }
+// dancewear zones, rest pose: loose shorts (waist to mid-thigh) and a tank top (scoop neck, armholes clear of the
+// shoulders). Signed functions are positive inside the fabric. figure.js evaluates the same functions per fragment.
+const GARMENT = {
+  shorts: { waistFront: 1.003, waistBack: 1.026, hem: 0.70, hemRise: 0.016 },
+  top: { hem: 0.985, neckFront: [1.362, 29.0], neckBack: [1.405, 19.0], armTop: 1.43, armBottom: 1.245, armX: 0.098, armXBack: 0.118, armFlare: 0.075 },
+};
+function shortsS(p) { const G = GARMENT.shorts; const waist = G.waistBack + (G.waistFront - G.waistBack) * sstep(-0.03, 0.03, p[2]); const hem = G.hem + G.hemRise * sstep(0.08, 0.17, Math.abs(p[0])); return Math.min(waist - p[1], p[1] - hem); }
+function topS(p) {
+  const G = GARMENT.top, ax = Math.abs(p[0]), fr = sstep(-0.03, 0.03, p[2]);
+  const yb = G.neckBack[0] + (G.neckFront[0] - G.neckBack[0]) * fr, c = G.neckBack[1] + (G.neckFront[1] - G.neckBack[1]) * fr;
+  const t = clamp((p[1] - G.armBottom) / (G.armTop - G.armBottom), 0, 1);
+  const armX = G.armXBack + (G.armX - G.armXBack) * fr;
+  return Math.min(yb + c * ax * ax - p[1], armX + G.armFlare * (1 - Math.sqrt(t)) - ax, p[1] - G.hem);
+}
+const clothable = name => name === 'trunk' || name.startsWith('leg');
 function headCut(p) { return p[1] > 1.505 + (p[2] < 0 ? -p[2] * 0.4 : 0); }
 
 // =============================================================== MAIN
@@ -820,14 +835,43 @@ for (const p of PARTS) {
   IMP[p.name] = /^(index|middle|ring|pinky|thumb)/.test(n) ? 5 : /^hand/.test(n) ? 3.5 : /^toes/.test(n) ? 3 : /^foot/.test(n) ? 2 : n === 'head' ? 1.6 : 1;
   LMAX[p.name] = /^(index|middle|ring|pinky)/.test(n) ? 0.0042 : /^thumb/.test(n) ? 0.0048 : /^hand/.test(n) ? 0.0065 : /^toes/.test(n) ? 0.005 : /^foot/.test(n) ? 0.009 : n === 'head' ? 0.011 : /^arm/.test(n) ? 0.013 : /^leg/.test(n) ? 0.015 : 0.017;
 }
+const hemZone = (p, pi) => clothable(PARTS[pi].name) ? 1 - sstep(0.004, 0.016, Math.min(Math.abs(shortsS(p)), Math.abs(topS(p)))) : 0;
 const jointZone = p => { let z = 0; for (const s of [1, -1]) { z = Math.max(z, 1 - sstep(0.03, 0.07, dist(p, AF[s].EL)), 1 - sstep(0.04, 0.08, dist(p, LF[s].KNEE)), 1 - sstep(0.03, 0.06, dist(p, AF[s].WR)), 1 - sstep(0.04, 0.08, dist(p, AF[s].SH)), 1 - sstep(0.04, 0.08, dist(p, LF[s].HIP))); } return z; };
 if (TARGET > 0 && mesh.tris.length / 3 > TARGET) {
   const P = mesh.pos;
   mesh = decimate(P, mesh.tris, TARGET,
-    v => { const p = [P[3 * v], P[3 * v + 1], P[3 * v + 2]]; return IMP[PARTS[vpart[v]].name] * (1 + 0.6 * jointZone(p)); },
-    v => { const p = [P[3 * v], P[3 * v + 1], P[3 * v + 2]]; const l = LMAX[PARTS[vpart[v]].name]; return Math.min(l, 0.0105 + (1 - jointZone(p)) * 0.02); });
+    v => { const p = [P[3 * v], P[3 * v + 1], P[3 * v + 2]]; return IMP[PARTS[vpart[v]].name] * (1 + 0.6 * jointZone(p) + 0.8 * hemZone(p, vpart[v])); },
+    v => { const p = [P[3 * v], P[3 * v + 1], P[3 * v + 2]]; const l = LMAX[PARTS[vpart[v]].name]; return Math.min(l, 0.0105 + (1 - jointZone(p)) * 0.02, 0.0075 + (1 - hemZone(p, vpart[v])) * 0.03); });
 }
 project(mesh.pos, 3, 0.004);
+{ // repair folded triangles: relax their vertices toward the 1-ring centroid, reproject, repeat
+  const P = mesh.pos, T = mesh.tris, n = P.length / 3, ring = Array.from({ length: n }, () => new Set());
+  for (let f = 0; f < T.length / 3; f++) for (let k = 0; k < 3; k++) { const a = T[3 * f + k], b = T[3 * f + (k + 1) % 3]; ring[a].add(b); ring[b].add(a); }
+  for (let pass = 0; pass < 8; pass++) {
+    const bad = new Set();
+    for (let f = 0; f < T.length / 3; f++) {
+      const ia = T[3 * f], ib = T[3 * f + 1], ic = T[3 * f + 2], A = [P[3 * ia], P[3 * ia + 1], P[3 * ia + 2]];
+      const fnn = norm(cross(sub([P[3 * ib], P[3 * ib + 1], P[3 * ib + 2]], A), sub([P[3 * ic], P[3 * ic + 1], P[3 * ic + 2]], A)));
+      const c = [0, 1, 2].reduce((acc, k) => add(acc, [P[3 * T[3 * f + k]], P[3 * T[3 * f + k] + 1], P[3 * T[3 * f + k] + 2]]), [0, 0, 0]).map(x => x / 3);
+      const g = norm(gradAt(c[0], c[1], c[2], 0.0004));
+      if (dot(fnn, g) < 0.3) for (let k = 0; k < 3; k++) bad.add(T[3 * f + k]);
+    }
+    if (!bad.size) break;
+    const sub3 = new Float64Array(bad.size * 3); let j = 0;
+    for (const v of bad) { let x = 0, y = 0, z = 0; for (const u of ring[v]) { x += P[3 * u]; y += P[3 * u + 1]; z += P[3 * u + 2]; } const m = ring[v].size || 1; P[3 * v] = x / m; P[3 * v + 1] = y / m; P[3 * v + 2] = z / m; sub3[j++] = v; }
+    const tmp = new Float64Array(bad.size * 3); j = 0; for (const v of bad) { tmp[3 * j] = P[3 * v]; tmp[3 * j + 1] = P[3 * v + 1]; tmp[3 * j + 2] = P[3 * v + 2]; j++; }
+    project(tmp, 3, 0.003); j = 0; for (const v of bad) { P[3 * v] = tmp[3 * j]; P[3 * v + 1] = tmp[3 * j + 1]; P[3 * v + 2] = tmp[3 * j + 2]; j++; }
+    log(`fold repair pass ${pass}: ${bad.size} vertices relaxed`);
+  }
+  let flipped = 0; // leftovers are tiny slivers lying on the surface but wound inward: turn them to face out
+  for (let f = 0; f < T.length / 3; f++) {
+    const ia = T[3 * f], ib = T[3 * f + 1], ic = T[3 * f + 2], A = [P[3 * ia], P[3 * ia + 1], P[3 * ia + 2]];
+    const fnn = norm(cross(sub([P[3 * ib], P[3 * ib + 1], P[3 * ib + 2]], A), sub([P[3 * ic], P[3 * ic + 1], P[3 * ic + 2]], A)));
+    const c = [0, 1, 2].reduce((acc, k) => add(acc, [P[3 * T[3 * f + k]], P[3 * T[3 * f + k] + 1], P[3 * T[3 * f + k] + 2]]), [0, 0, 0]).map(x => x / 3);
+    if (dot(fnn, norm(gradAt(c[0], c[1], c[2], 0.0004))) < -0.3) { T[3 * f + 1] = ic; T[3 * f + 2] = ib; flipped++; }
+  }
+  log(`fold repair: ${flipped} inward slivers re-wound`);
+}
 const pos = mesh.pos, tris = mesh.tris, nV = pos.length / 3, nT = tris.length / 3;
 log(`final mesh: ${nV} verts, ${nT} tris; computing attributes`);
 // mesh normals for fallback
@@ -843,7 +887,7 @@ for (let i = 0; i < nV; i++) {
   const m = norm([mn[3 * i], mn[3 * i + 1], mn[3 * i + 2]]);
   let g = gradAt(p[0], p[1], p[2], 0.0004); const gl = len(g);
   let n = gl > 0.2 ? mul(g, 1 / gl) : m;
-  if (dot(n, m) < 0.5) { n = m; fallbackN++; }
+  if (dot(n, m) < 0.5) { n = m; fallbackN++; if (ARGS.verbose) console.log("normal fallback at", p.map(x => x.toFixed(3)).join(","), "grad", gl.toFixed(2), "dot", dot(mul(g, 1 / (gl || 1)), m).toFixed(2)); }
   nrm[3 * i] = n[0]; nrm[3 * i + 1] = n[1]; nrm[3 * i + 2] = n[2];
   const { own, list } = vertexWeights(p); vown[i] = own;
   // quantize weights to bytes summing to 255
@@ -853,6 +897,28 @@ for (let i = 0; i < nV; i++) {
   cav[i] = Math.round(cavityAt(p, n, own) * 255);
 }
 log(`attributes done (normal fallbacks ${fallbackN})`);
+{ // folded-triangle check: face normal against the field normals of its corners
+  let folds = 0;
+  for (let f = 0; f < nT; f++) {
+    const [a, b, c] = [tris[3 * f], tris[3 * f + 1], tris[3 * f + 2]], P3 = i => [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]];
+    const fn = norm(cross(sub(P3(b), P3(a)), sub(P3(c), P3(a))));
+    const vn = norm([0, 1, 2].reduce((acc, k) => add(acc, [nrm[3 * tris[3 * f + k]], nrm[3 * tris[3 * f + k] + 1], nrm[3 * tris[3 * f + k] + 2]]), [0, 0, 0]));
+    if (dot(fn, vn) < 0.3) { folds++; if (ARGS.verbose && folds < 20) console.log('fold at', P3(a).map(x => x.toFixed(3)).join(','), 'dot', dot(fn, vn).toFixed(2)); }
+  }
+  log('folded triangles:', folds);
+  let off = 0; for (let i = 0; i < nV; i++) { const d = fieldAt(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]); if (Math.abs(d) > 0.0004) { off++; if (ARGS.verbose && off < 12) console.log('off-surface', [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]].map(x => x.toFixed(3)).join(','), d.toFixed(4)); } }
+  log('vertices off surface > 0.4 mm:', off);
+}
+// cloth: mask (trunk + legs) and heavily smoothed normals, so fabric does not follow small anatomy (navel, abs)
+const clothMask = new Uint8Array(nV); for (let i = 0; i < nV; i++) clothMask[i] = clothable(PARTS[vown[i]].name) ? 255 : 0;
+const adj = Array.from({ length: nV }, () => new Set());
+for (let f = 0; f < nT; f++) for (let k = 0; k < 3; k++) { const a = tris[3 * f + k], b = tris[3 * f + (k + 1) % 3]; adj[a].add(b); adj[b].add(a); }
+let cn = Float32Array.from(nrm);
+for (let it = 0; it < 16; it++) {
+  const nx = new Float32Array(nV * 3);
+  for (let i = 0; i < nV; i++) { let x = cn[3 * i], y = cn[3 * i + 1], z = cn[3 * i + 2]; for (const j of adj[i]) { x += cn[3 * j]; y += cn[3 * j + 1]; z += cn[3 * j + 2]; } const l = Math.hypot(x, y, z) || 1; nx[3 * i] = x / l; nx[3 * i + 1] = y / l; nx[3 * i + 2] = z / l; }
+  cn = nx;
+}
 // head group: triangles above the neck cut
 const bodyT = [], headT = [];
 for (let f = 0; f < nT; f++) {
@@ -872,8 +938,14 @@ for (let i = 0; i < nV; i++) {
   if (z < 0) { const ox = x; x = (1 - Math.abs(y)) * (ox >= 0 ? 1 : -1); y = (1 - Math.abs(ox)) * (y >= 0 ? 1 : -1); }
   onrm[2 * i] = Math.round(clamp(x, -1, 1) * 127); onrm[2 * i + 1] = Math.round(clamp(y, -1, 1) * 127);
 }
+const ocn = new Int8Array(nV * 2);
+for (let i = 0; i < nV; i++) {
+  let [x, y, z] = [cn[3 * i], cn[3 * i + 1], cn[3 * i + 2]]; const l1 = Math.abs(x) + Math.abs(y) + Math.abs(z); x /= l1; y /= l1;
+  if (z < 0) { const ox = x; x = (1 - Math.abs(y)) * (ox >= 0 ? 1 : -1); y = (1 - Math.abs(ox)) * (y >= 0 ? 1 : -1); }
+  ocn[2 * i] = Math.round(clamp(x, -1, 1) * 127); ocn[2 * i + 1] = Math.round(clamp(y, -1, 1) * 127);
+}
 const idx = idx32 ? new Uint32Array(bodyT.length + headT.length) : new Uint16Array(bodyT.length + headT.length); idx.set(bodyT, 0); idx.set(headT, bodyT.length);
-const parts = [['pos', qpos], ['nrm', onrm], ['skinIndex', skI], ['skinWeight', skW], ['flesh', flesh], ['cavity', cav], ['index', idx]];
+const parts = [['pos', qpos], ['nrm', onrm], ['skinIndex', skI], ['skinWeight', skW], ['flesh', flesh], ['cavity', cav], ['clothMask', clothMask], ['clothNrm', ocn], ['index', idx]];
 let off = 0; const layout = {};
 for (const [name, arr] of parts) { off = (off + 3) & ~3; layout[name] = [off, arr.byteLength]; off += arr.byteLength; }
 const buf = Buffer.alloc(off);
@@ -881,7 +953,7 @@ for (const [name, arr] of parts) Buffer.from(arr.buffer, arr.byteOffset, arr.byt
 const meta = {
   generated: new Date().toISOString(), vertexCount: nV, triangleCount: nT, indexType: idx32 ? 'uint32' : 'uint16', center, halfRange: halfR, layout,
   groups: [{ start: 0, count: bodyT.length, materialIndex: 0 }, { start: bodyT.length, count: headT.length, materialIndex: 1 }],
-  bones: ALLB, helpers: HELPERS, fleshBones: FLESH_BONES, gridH: H,
+  bones: ALLB, helpers: HELPERS, fleshBones: FLESH_BONES, garment: GARMENT, gridH: H,
 };
 const b64 = buf.toString('base64');
 mkdirSync(dirname(OUT), { recursive: true });
